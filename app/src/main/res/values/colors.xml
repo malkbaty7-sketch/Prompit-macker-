@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="purple_primary">#0D8A7F</color>
+    <color name="purple_dark">#0C3D39</color>
+    <color name="obsidian_bg">#0D141C</color>
+    <color name="slate_surface">#152230</color>
+    <color name="text_white">#EAF0F6</color>
+    <color name="ic_launcher_background">#0A0A0C</color>
+</resources>

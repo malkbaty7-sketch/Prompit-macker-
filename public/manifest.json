@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "Forgeprom Code Studio | استوديو هندسة البرومبتات والأنظمة الذكية",
+  "short_name": "Forgeprom",
+  "description": "استوديو هندسي لتحويل الأفكار إلى مواصفات تقنية وبرومبتات احترافية مع إدارة النماذج المحلية والعمل دون إنترنت",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "ar",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

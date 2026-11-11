@@ -1,0 +1,6 @@
+{
+  "name": "Forgeprom Code Studio",
+  "description": "استوديو هندسي لتحويل الأفكار إلى مواصفات تقنية وبرومبتات احترافية مع إدارة النماذج المحلية والعمل دون إنترنت",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

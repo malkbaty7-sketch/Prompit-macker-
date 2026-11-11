@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ar" dir="rtl" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forgeprom Code Studio | استوديو هندسة البرومبتات والأنظمة الذكية</title>
+    <meta name="description" content="استوديو هندسي لتحويل الأفكار إلى مواصفات تقنية وبرومبتات احترافية مع إدارة النماذج المحلية والعمل دون إنترنت" />
+    <meta property="og:title" content="Forgeprom Code Studio | استوديو هندسة البرومبتات والأنظمة الذكية" />
+    <meta property="og:description" content="استوديو هندسي لتحويل الأفكار إلى مواصفات تقنية وبرومبتات احترافية مع إدارة النماذج المحلية والعمل دون إنترنت" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/icon-512.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Forgeprom" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <script>
+      // Global capture-phase error shield to prevent cross-origin Script error noise in sandboxed iframes
+      window.addEventListener(
+        'error',
+        function (event) {
+          var msg = event && event.message ? String(event.message) : '';
+          if (
+            msg === 'Script error.' ||
+            msg === 'Script error' ||
+            msg.indexOf('ResizeObserver loop') !== -1 ||
+            (!event.filename && !event.lineno && !event.colno)
+          ) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return false;
+          }
+          console.warn('Forgeprom caught window error:', msg, event.filename, event.lineno);
+        },
+        true
+      );
+      window.addEventListener(
+        'unhandledrejection',
+        function (event) {
+          console.warn('Forgeprom caught unhandled rejection:', event.reason);
+        },
+        true
+      );
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  </head>
+  <body class="bg-slate-950 text-slate-100 font-sans antialiased selection:bg-purple-600 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

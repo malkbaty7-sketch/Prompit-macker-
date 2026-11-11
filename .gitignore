@@ -1,0 +1,20 @@
+# Node / Web
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Android & Gradle
+.gradle/
+app/build/
+*.iml
+.idea/
+local.properties
+.cxx/
+*.apk
+*.aab
+!gradle/wrapper/gradle-wrapper.jar

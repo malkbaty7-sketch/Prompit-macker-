@@ -1,0 +1,205 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Eye-Comforting Nordic Slate & Charcoal Surfaces (Low-Glare, Zero Halation) */
+  --color-slate-950: #0d141c;
+  --color-slate-900: #141f2b;
+  --color-slate-800: #1e2d3d;
+  --color-slate-700: #2b3f54;
+  --color-slate-600: #415a74;
+  --color-slate-500: #627d98;
+  --color-slate-400: #88a0b8;
+  --color-slate-300: #b3c5d7;
+  --color-slate-200: #d5e1ec;
+  --color-slate-100: #eaf0f6;
+  --color-slate-50: #f5f8fa;
+
+  /* Calming Ergonomic Teal-Jade Primary Accent (Replaces High-Fatigue Violet) */
+  --color-purple-950: #072927;
+  --color-purple-900: #0c3d39;
+  --color-purple-800: #115751;
+  --color-purple-700: #0d8a7f;
+  --color-purple-600: #12a598;
+  --color-purple-500: #26c2b4;
+  --color-purple-400: #54d9cc;
+  --color-purple-300: #8cebe0;
+  --color-purple-200: #c2f7f0;
+  --color-purple-100: #e3fcf8;
+
+  /* Harmonious Deep Ocean-Cyan Secondary Accent */
+  --color-indigo-950: #092234;
+  --color-indigo-900: #10354f;
+  --color-indigo-800: #16496b;
+  --color-indigo-700: #1d6491;
+  --color-indigo-600: #257fb5;
+  --color-indigo-500: #389bd4;
+  --color-indigo-400: #66b8e6;
+}
+
+@layer base {
+  :root {
+    --font-sans: 'Cairo', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    direction: rtl;
+    background-color: #0d141c;
+    color: #eaf0f6;
+    letter-spacing: 0.005em;
+  }
+
+  /* Custom Eye-Comfort Scrollbar */
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgba(13, 20, 28, 0.6);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(84, 217, 204, 0.22);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(84, 217, 204, 0.42);
+  }
+}
+
+/* ============================================================================
+   3D Extruded Display Screens & Ergonomic Tactile Architecture
+   ============================================================================ */
+
+.studio-3d-stage {
+  perspective: 1800px;
+  transform-style: preserve-3d;
+}
+
+/* Main 3D Extruded Viewport Screen Chassis */
+.screen-3d-chassis {
+  position: relative;
+  background: linear-gradient(165deg, #162330 0%, #101a24 55%, #0c131b 100%);
+  border: 1px solid rgba(84, 217, 204, 0.18);
+  border-top: 1px solid rgba(140, 235, 224, 0.32);
+  border-bottom: 5px solid #070c11;
+  border-radius: 1.25rem;
+  box-shadow:
+    0 26px 55px -14px rgba(3, 7, 12, 0.88),
+    0 8px 0 -1px #091119,
+    0 9px 22px rgba(13, 138, 127, 0.12),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.12),
+    inset 0 0 32px rgba(18, 165, 152, 0.03);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Perspective Tilt Mode for 3D Display Screens */
+.screen-3d-tilted {
+  transform: rotateX(1.35deg) translateY(-2px);
+  box-shadow:
+    0 34px 68px -14px rgba(2, 6, 10, 0.92),
+    0 11px 0 -1px #081018,
+    0 14px 32px rgba(18, 165, 152, 0.16),
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.16);
+}
+
+/* 3D Extruded Cards inside screens */
+.studio-3d-stage .bg-slate-900,
+.studio-3d-stage .bg-slate-900\/70,
+.studio-3d-stage .bg-slate-900\/80 {
+  background: linear-gradient(175deg, #182635 0%, #131e2a 100%);
+  border-top-color: rgba(255, 255, 255, 0.11);
+  border-bottom: 3px solid #091017;
+  box-shadow:
+    0 12px 26px -6px rgba(4, 9, 14, 0.72),
+    0 3px 0 0 #0a121a,
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.studio-3d-stage .bg-slate-900:hover,
+.studio-3d-stage .bg-slate-900\/70:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 18px 34px -8px rgba(4, 9, 14, 0.82),
+    0 5px 0 0 #0a121a,
+    0 6px 18px rgba(18, 165, 152, 0.1),
+    inset 0 1px 0 0 rgba(140, 235, 224, 0.18);
+}
+
+/* 3D Recessed Display Wells for Code, Prompts, and Inputs */
+.studio-3d-stage textarea,
+.studio-3d-stage input[type="text"],
+.studio-3d-stage input[type="password"],
+.studio-3d-stage select,
+.studio-3d-stage pre {
+  background-color: #0b1118;
+  border-color: #1c2b3b;
+  box-shadow:
+    inset 0 3px 7px rgba(2, 5, 9, 0.75),
+    inset 0 1px 2px rgba(0, 0, 0, 0.65),
+    0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.studio-3d-stage textarea:focus,
+.studio-3d-stage input[type="text"]:focus,
+.studio-3d-stage input[type="password"]:focus,
+.studio-3d-stage select:focus {
+  border-color: #26c2b4;
+  box-shadow:
+    inset 0 3px 7px rgba(2, 5, 9, 0.8),
+    0 0 0 2px rgba(38, 194, 180, 0.22);
+}
+
+/* 3D Physical Sculpted Primary Action Buttons */
+.studio-3d-stage .bg-purple-700 {
+  background: linear-gradient(180deg, #15a89b 0%, #0d8277 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.28);
+  border-bottom: 3px solid #074f48;
+  box-shadow:
+    0 6px 14px -2px rgba(13, 138, 127, 0.42),
+    0 2px 0 0 #06423c,
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.studio-3d-stage .bg-purple-700:hover {
+  background: linear-gradient(180deg, #1cb8aa 0%, #0f9185 100%);
+  transform: translateY(-1px);
+  box-shadow:
+    0 9px 18px -2px rgba(18, 165, 152, 0.52),
+    0 3px 0 0 #06423c,
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.32);
+}
+
+.studio-3d-stage .bg-purple-700:active {
+  transform: translateY(1.5px);
+  box-shadow:
+    0 2px 6px rgba(13, 138, 127, 0.3),
+    0 0 0 0 #06423c,
+    inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Eye-Care Warm Comfort Filter Option */
+.eye-comfort-warmth {
+  filter: sepia(0.06) saturate(0.94) brightness(0.98);
+}
+
+/* Light Mode Ergonomic Warm Paper Overrides */
+html:not(.dark) body {
+  background-color: #f2efe9;
+  color: #18222d;
+}
+
+html:not(.dark) .screen-3d-chassis {
+  background: linear-gradient(165deg, #ffffff 0%, #f7f5f0 100%);
+  border: 1px solid #d5cfc4;
+  border-top: 1px solid #ffffff;
+  border-bottom: 5px solid #c2bbb0;
+  box-shadow:
+    0 22px 45px -12px rgba(24, 34, 45, 0.14),
+    0 6px 0 -1px #cbc4b8,
+    inset 0 1px 0 0 #ffffff;
+}
