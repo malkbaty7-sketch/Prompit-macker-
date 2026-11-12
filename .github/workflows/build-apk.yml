@@ -7,9 +7,12 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch: # يتيح تشغيل البناء يدوياً بضغطة زر من تبويب Actions في GitHub
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    name: Build Android Debug & Release APK
+    name: Build Android Debug APK
     runs-on: ubuntu-latest
 
     steps:
@@ -21,13 +24,27 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Accept Android SDK Licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Ensure Gradle Wrapper Exists
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar not found, downloading official wrapper..."
+            mkdir -p gradle/wrapper
+            curl -sLo gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v8.10.2/gradle/wrapper/gradle-wrapper.jar
+          fi
+
       - name: Grant Execute Permission for Gradlew
         run: chmod +x gradlew
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Build Debug APK with Gradle
         run: ./gradlew assembleDebug --stacktrace --no-daemon
@@ -36,7 +53,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Forgeprom-CodeStudio-Debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -44,6 +61,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: app/build/outputs/apk/debug/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
