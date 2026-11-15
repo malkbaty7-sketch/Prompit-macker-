@@ -17,25 +17,30 @@ android {
         versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
 
-        ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+    signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug") // Allows direct testing of release build on physical phones
+            signingConfig = signingConfigs.getByName("debugConfig")
         }
         debug {
-            applicationIdSuffix = ".debug"
             isDebuggable = true
+            signingConfig = signingConfigs.getByName("debugConfig")
         }
     }
 
@@ -78,11 +83,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     // WorkManager (Background downloads & recovery)
-    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    // implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     // ML Kit (Offline Text & Barcode recognition)
-    implementation("com.google.mlkit:text-recognition:16.0.1")
-    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // implementation("com.google.mlkit:text-recognition:16.0.1")
+    // implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
     // Debugging
     debugImplementation("androidx.compose.ui:ui-tooling")
