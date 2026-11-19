@@ -10,12 +10,17 @@ import com.forgeprom.codestudio.core.export.NativeShareAndPdfHelper
 import com.forgeprom.codestudio.core.hardware.HardwareProfiler
 import com.forgeprom.codestudio.core.network.NetworkMonitor
 import com.forgeprom.codestudio.core.service.ForegroundGenerationService
+import com.forgeprom.codestudio.core.ui.CardVisualStyle
 import com.forgeprom.codestudio.core.ui.ForgepromTheme
+import com.forgeprom.codestudio.core.ui.StudioVisualSettings
+import com.forgeprom.codestudio.core.ui.ThemeSurfaceMode
+import com.forgeprom.codestudio.core.ui.VisualSettingsPreferences
 import com.forgeprom.codestudio.data.local.db.AppDatabase
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.data.remote.CloudApiService
 import com.forgeprom.codestudio.data.remote.ModelDownloadManager
 import com.forgeprom.codestudio.domain.blueprint.BlueprintAndScaffoldManager
+import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
 import com.forgeprom.codestudio.presentation.screens.MainAppScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -52,7 +57,7 @@ class MainActivity : ComponentActivity() {
                         type = "NEW_APP",
                         targetPlatform = "ANDROID_KOTLIN",
                         rawIdea = "تطبيق أندرويد متكامل لنقاط البيع السريعة بدون إنترنت",
-                        currentPromptText = "# البرومبت الهندسي المعتمد لـ ForgePOS\n- المعمارية: Clean Architecture + Room DB\n- الميزات: كاشير سريع، باركود ML Kit، طباعة حرارية ESC/POS دون إنترنت.",
+                        currentPromptText = "# البرومبت الهندسي المعتمد لـ ForgePOS\n- المعمارية: Clean Architecture + MVVM + Room DB\n- الواجهة: Jetpack Compose RTL مع دعم الوضع الداكن\n- الأمان: تشفير الفواتير والمفاتيح عبر Android KeyStore AES-256-GCM وفق معايير OWASP\n- الحالات الحدية: العمل دون إنترنت 100% ومنع استنزاف الذاكرة RAM (OOM)\n- معايير القبول: اختبار العمليات الحسابية وتصدير التقارير PDF.",
                         isPinned = true
                     )
                 )
@@ -64,7 +69,7 @@ class MainActivity : ComponentActivity() {
                         type = "NEW_APP",
                         targetPlatform = "FLUTTER",
                         rawIdea = "إدارة ملفات المرضى وتاريخ الزيارات الطبية محلياً على التابلت",
-                        currentPromptText = "# البرومبت الهندسي المعتمد لـ ForgeClinic\n- تشفير AES-256 محلي، سجل زيارات مرضى، وتصدير تقارير طبية PDF باللغة العربية.",
+                        currentPromptText = "# البرومبت الهندسي المعتمد لـ ForgeClinic\n- المعمارية: Clean Architecture + SQLite Room\n- الأمان: تشفير AES-256-GCM محلي وفق OWASP MASVS\n- الميزات: سجل زيارات مرضى، عمل دون إنترنت، وتصدير تقارير طبية PDF باللغة العربية (RTL).",
                         isPinned = false
                     )
                 )
@@ -72,7 +77,16 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            ForgepromTheme {
+            var visualSettings by remember {
+                mutableStateOf(VisualSettingsPreferences.load(this@MainActivity))
+            }
+
+            fun updateAndSaveVisualSettings(updated: StudioVisualSettings) {
+                visualSettings = updated
+                VisualSettingsPreferences.save(this@MainActivity, updated)
+            }
+
+            ForgepromTheme(visualSettings = visualSettings) {
                 val projects by database.projectDao().getActiveProjectsFlow().collectAsState(initial = emptyList())
                 val networkState by networkMonitor.observeNetworkState().collectAsState(
                     initial = networkMonitor.getCurrentNetworkState()
@@ -122,6 +136,29 @@ class MainActivity : ComponentActivity() {
                     researchResult = researchResult,
                     isResearching = isResearching,
                     actionFeedback = actionFeedback,
+                    visualSettings = visualSettings,
+                    onUpdateVisualSettings = { updateAndSaveVisualSettings(it) },
+                    onToggle3DDepth = {
+                        val nextStyle = if (visualSettings.cardStyle == CardVisualStyle.EXTRUDED_3D) {
+                            CardVisualStyle.FLAT_MINIMAL
+                        } else {
+                            CardVisualStyle.EXTRUDED_3D
+                        }
+                        updateAndSaveVisualSettings(visualSettings.copy(cardStyle = nextStyle))
+                    },
+                    onToggleEyeComfort = {
+                        updateAndSaveVisualSettings(
+                            visualSettings.copy(isEyeComfortWarm = !visualSettings.isEyeComfortWarm)
+                        )
+                    },
+                    onToggleDarkTheme = {
+                        val nextMode = if (visualSettings.surfaceMode == ThemeSurfaceMode.WARM_PAPER_LIGHT) {
+                            ThemeSurfaceMode.NORDIC_DARK
+                        } else {
+                            ThemeSurfaceMode.WARM_PAPER_LIGHT
+                        }
+                        updateAndSaveVisualSettings(visualSettings.copy(surfaceMode = nextMode))
+                    },
                     onCheckServer = { checkServer() },
                     onUpdateServerUrl = { newUrl ->
                         cloudApiService.setServerUrl(newUrl)
@@ -184,11 +221,89 @@ class MainActivity : ComponentActivity() {
                     },
                     onExportPdf = { proj ->
                         val file = NativeShareAndPdfHelper.generateNativeRtlPdf(this@MainActivity, proj)
-                        showFeedback("✓ تم حفظ ملف PDF العربي في: ${file.name}")
+                        showFeedback("✓ تم حفظ ملف PDF العربي المتعدد الصفحات في: ${file.name}")
                     },
                     onExportStarterZip = { proj ->
-                        val file = BlueprintAndScaffoldManager.generateStarterBoilerplateZip(this@MainActivity, proj)
-                        showFeedback("✓ تم توليد هيكل كود المشروع: ${file.name}")
+                        val file = BlueprintAndScaffoldManager.generateStarterBoilerplateZip(
+                            this@MainActivity,
+                            proj,
+                            currentServerUrl
+                        )
+                        showFeedback("✓ تم توليد أرشيف الكود المتكامل: ${file.name}")
+                    },
+                    onExportMarkdown = { proj, customContent ->
+                        val file = NativeShareAndPdfHelper.exportMarkdownSpec(this@MainActivity, proj, customContent)
+                        showFeedback("✓ تم تصدير وثيقة Markdown: ${file.name}")
+                    },
+                    onUpdateProjectPrompt = { proj, updatedPrompt, feedbackMsg ->
+                        lifecycleScope.launch {
+                            database.projectDao().insertOrUpdate(
+                                proj.copy(
+                                    currentPromptText = updatedPrompt.trim(),
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                            showFeedback(feedbackMsg)
+                        }
+                    },
+                    onTogglePinProject = { proj ->
+                        lifecycleScope.launch {
+                            database.projectDao().insertOrUpdate(
+                                proj.copy(
+                                    isPinned = !proj.isPinned,
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                            showFeedback(if (!proj.isPinned) "⭐ تم تثبيت المشروع في الأعلى" else "تم إلغاء تثبيت المشروع")
+                        }
+                    },
+                    onDeleteProject = { proj ->
+                        lifecycleScope.launch {
+                            database.projectDao().deleteById(proj.id)
+                            showFeedback("🗑️ تم حذف المشروع: ${proj.name}")
+                        }
+                    },
+                    onAnalyzeWireframeUri = { proj, uri ->
+                        lifecycleScope.launch {
+                            val visionSpec = PromptEngineeringEngine.analyzeWireframeImage(
+                                this@MainActivity,
+                                uri,
+                                proj.name
+                            )
+                            val merged = buildString {
+                                appendLine(proj.currentPromptText ?: proj.rawIdea)
+                                appendLine("\n---\n")
+                                appendLine(visionSpec)
+                            }
+                            database.projectDao().insertOrUpdate(
+                                proj.copy(
+                                    currentPromptText = merged,
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                            showFeedback("✓ تم تحليل المخطط البصري وإلحاق مواصفات UI/UX بالمشروع")
+                        }
+                    },
+                    onCopyText = { label, text ->
+                        NativeShareAndPdfHelper.copyToClipboard(this@MainActivity, label, text)
+                        showFeedback("✓ تم نسخ ($label) إلى الحافظة")
+                    },
+                    onBackupAllProjects = {
+                        lifecycleScope.launch {
+                            val file = NativeShareAndPdfHelper.exportAllProjectsBackupJson(this@MainActivity, projects)
+                            showFeedback("✓ تم حفظ النسخة الاحتياطية لجميع المشاريع: ${file.name}")
+                        }
+                    },
+                    onRestoreBackupProjects = {
+                        lifecycleScope.launch {
+                            val restored = NativeShareAndPdfHelper.restoreProjectsFromBackupJson(this@MainActivity)
+                            if (restored.isNotEmpty()) {
+                                restored.forEach { database.projectDao().insertOrUpdate(it) }
+                                showFeedback("✓ تمت استعادة ${restored.size} مشاريع من النسخة الاحتياطية بنجاح")
+                            } else {
+                                showFeedback("ℹ️ لا توجد نسخة احتياطية محفوظة مسبقاً للاستعادة")
+                            }
+                        }
                     },
                     onNewProject = { name, idea ->
                         lifecycleScope.launch {
