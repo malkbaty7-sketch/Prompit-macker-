@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import com.forgeprom.codestudio.core.ui.CardVisualStyle
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.core.ui.StudioVisualSettings
+import java.util.Locale
 
 /**
  * 1. شريط التحكم البصري السريع + زر فتح استوديو تخصيص المظهر
@@ -173,7 +174,7 @@ fun HardwareTelemetryHud3D(
                         }
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                text = "${(availableRamMB / 1024f).let { String.format("%.1f", it) }}G",
+                                text = "${(availableRamMB / 1024f).let { String.format(Locale.US, "%.1f", it) }}G",
                                 fontWeight = FontWeight.ExtraBold,
                                 color = visual.primaryText,
                                 fontSize = (10f + visual.fontDelta).sp

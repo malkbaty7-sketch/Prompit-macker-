@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- App-specific external Documents directory for exported PDFs, Markdown specs, and Starter ZIPs -->
+    <external-files-path
+        name="forgeprom_documents"
+        path="Documents/" />
+    <!-- Fallback internal exports & scaffolds directories -->
+    <files-path
+        name="forgeprom_internal_exports"
+        path="ForgepromExports/" />
+    <files-path
+        name="forgeprom_internal_scaffolds"
+        path="ForgepromScaffolds/" />
+</paths>

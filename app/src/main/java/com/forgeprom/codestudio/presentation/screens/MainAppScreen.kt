@@ -34,6 +34,7 @@ import com.forgeprom.codestudio.data.remote.CloudApiService
 import com.forgeprom.codestudio.data.remote.ModelDownloadManager
 import com.forgeprom.codestudio.domain.blueprint.BlueprintAndScaffoldManager
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
+import java.io.File
 
 private data class NavDestinationItem(
     val index: Int,
@@ -46,6 +47,7 @@ private data class NavDestinationItem(
 @Composable
 fun MainAppScreen(
     projects: List<ProjectEntity>,
+    archivedProjects: List<ProjectEntity>,
     availableRamMB: Long,
     networkState: NetworkMonitor.NetworkState,
     serverStatus: CloudApiService.ServerHealthResult?,
@@ -54,9 +56,12 @@ fun MainAppScreen(
     models: List<ModelDownloadManager.GgufModelInfo>,
     blueprints: List<BlueprintAndScaffoldManager.IndustryBlueprint>,
     downloadStatusMap: Map<String, String>,
+    downloadedModelIds: Set<String>,
+    activeDownloadingIds: Set<String>,
     researchResult: String,
     isResearching: Boolean,
     actionFeedback: String?,
+    lastExportedFile: Pair<File, String>?,
     visualSettings: StudioVisualSettings,
     onUpdateVisualSettings: (StudioVisualSettings) -> Unit,
     onToggle3DDepth: () -> Unit,
@@ -64,21 +69,27 @@ fun MainAppScreen(
     onToggleDarkTheme: () -> Unit,
     onCheckServer: () -> Unit,
     onUpdateServerUrl: (String) -> Unit,
+    onResetServerUrl: () -> Unit,
     onDownloadModel: (ModelDownloadManager.GgufModelInfo) -> Unit,
+    onCancelModelDownload: (ModelDownloadManager.GgufModelInfo) -> Unit,
+    onDeleteDownloadedModel: (ModelDownloadManager.GgufModelInfo) -> Unit,
     onRunResearch: (String) -> Unit,
     onUseBlueprint: (BlueprintAndScaffoldManager.IndustryBlueprint) -> Unit,
     onShareProject: (ProjectEntity) -> Unit,
+    onShareExportedFile: (File, String) -> Unit,
     onExportPdf: (ProjectEntity) -> Unit,
     onExportStarterZip: (ProjectEntity) -> Unit,
     onExportMarkdown: (ProjectEntity, String?) -> Unit,
     onUpdateProjectPrompt: (ProjectEntity, String, String) -> Unit,
     onTogglePinProject: (ProjectEntity) -> Unit,
+    onArchiveProject: (ProjectEntity) -> Unit,
+    onRestoreArchivedProject: (ProjectEntity) -> Unit,
     onDeleteProject: (ProjectEntity) -> Unit,
     onAnalyzeWireframeUri: (ProjectEntity, Uri) -> Unit,
-    onCopyText: (String, String) -> Unit,
+    onCopyText: (String, String, Boolean) -> Unit,
     onBackupAllProjects: () -> Unit,
     onRestoreBackupProjects: () -> Unit,
-    onNewProject: (String, String) -> Unit,
+    onNewProject: (String, String, String) -> Unit,
     onSelectProject: (ProjectEntity) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
@@ -88,6 +99,8 @@ fun MainAppScreen(
     var showAppearanceSheet by remember { mutableStateOf(false) }
     var selectedProjectForDialog by remember { mutableStateOf<ProjectEntity?>(null) }
     var activeStudioProject by remember { mutableStateOf<ProjectEntity?>(null) }
+    var projectPendingDelete by remember { mutableStateOf<ProjectEntity?>(null) }
+    var projectToEditPrompt by remember { mutableStateOf<ProjectEntity?>(null) }
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedPlatformFilter by remember { mutableStateOf("ALL") }
@@ -105,13 +118,14 @@ fun MainAppScreen(
         }.average().toInt()
     }
 
-    val filteredProjects = remember(projects, searchQuery, selectedPlatformFilter) {
-        projects.filter { proj ->
+    val filteredProjects = remember(projects, archivedProjects, searchQuery, selectedPlatformFilter) {
+        val sourceList = if (selectedPlatformFilter == "ARCHIVED") archivedProjects else projects
+        sourceList.filter { proj ->
             val matchesQuery = searchQuery.isBlank() ||
                 proj.name.contains(searchQuery, ignoreCase = true) ||
                 proj.description.contains(searchQuery, ignoreCase = true)
             val matchesFilter = when (selectedPlatformFilter) {
-                "ALL" -> true
+                "ALL", "ARCHIVED" -> true
                 "PINNED" -> proj.isPinned
                 else -> proj.targetPlatform.equals(selectedPlatformFilter, ignoreCase = true)
             }
@@ -278,12 +292,32 @@ fun MainAppScreen(
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
                         ) {
-                            Text(
-                                text = actionFeedback,
-                                color = visual.primaryText,
-                                fontSize = (11f + visual.fontDelta).sp,
-                                modifier = Modifier.padding(10.dp)
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = actionFeedback,
+                                    color = visual.primaryText,
+                                    fontSize = (11f + visual.fontDelta).sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                lastExportedFile?.let { (file, mime) ->
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    FilledTonalButton(
+                                        onClick = { onShareExportedFile(file, mime) },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier.heightIn(min = 34.dp).testTag("share_exported_file_button")
+                                    ) {
+                                        Icon(Icons.Default.Share, contentDescription = "مشاركة الملف المُصدّر", modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("مشاركة الملف", fontSize = 10.sp)
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -334,7 +368,9 @@ fun MainAppScreen(
                                             "PINNED" to "المثبتة ⭐",
                                             "ANDROID_KOTLIN" to "Android Kotlin",
                                             "FLUTTER" to "Flutter",
-                                            "REACT_NATIVE" to "React Native"
+                                            "REACT_NATIVE" to "React Native",
+                                            "WEB" to "Web",
+                                            "ARCHIVED" to "الأرشيف (${archivedProjects.size})"
                                         )
                                         items(filters, key = { it.first }) { (key, label) ->
                                             FilterChip(
@@ -345,6 +381,55 @@ fun MainAppScreen(
                                         }
                                     }
 
+                                    if (filteredProjects.isEmpty()) {
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = visual.surfaceBg),
+                                            border = visual.cardBorder,
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier.fillMaxWidth().testTag("projects_empty_state")
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(24.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.FolderOff,
+                                                    contentDescription = "لا توجد مشاريع مطابقة",
+                                                    tint = visual.secondaryText,
+                                                    modifier = Modifier.size(36.dp)
+                                                )
+                                                Text(
+                                                    text = if (projects.isEmpty()) "لا توجد مشاريع محفوظة بعد"
+                                                    else "لا توجد مشاريع تطابق البحث أو الفلتر الحالي",
+                                                    color = visual.primaryText,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = (13f + visual.fontDelta).sp
+                                                )
+                                                if (projects.isEmpty()) {
+                                                    Button(
+                                                        onClick = { showNewProjectDialog = true },
+                                                        colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary)
+                                                    ) {
+                                                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text("إنشاء مشروع جديد", fontSize = 12.sp)
+                                                    }
+                                                } else {
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            searchQuery = ""
+                                                            selectedPlatformFilter = "ALL"
+                                                        }
+                                                    ) {
+                                                        Text("مسح البحث وإظهار الكل", fontSize = 12.sp)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
                                     LazyColumn(
                                         verticalArrangement = Arrangement.spacedBy(visual.itemSpacing),
                                         modifier = Modifier.fillMaxSize().testTag("projects_list")
@@ -404,33 +489,47 @@ fun MainAppScreen(
                                                         }
 
                                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            IconButton(
-                                                                onClick = { onTogglePinProject(project) },
-                                                                modifier = Modifier.minimumInteractiveComponentSize()
-                                                            ) {
-                                                                Icon(
-                                                                    imageVector = if (project.isPinned) Icons.Default.Star else Icons.Default.StarBorder,
-                                                                    contentDescription = "تثبيت المشروع",
-                                                                    tint = if (project.isPinned) Color(0xFFFBBF24) else visual.secondaryText,
-                                                                    modifier = Modifier.size(20.dp)
-                                                                )
+                                                            if (selectedPlatformFilter == "ARCHIVED") {
+                                                                IconButton(
+                                                                    onClick = { onRestoreArchivedProject(project) },
+                                                                    modifier = Modifier.minimumInteractiveComponentSize().testTag("restore_project_btn_${project.id}")
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.Unarchive,
+                                                                        contentDescription = "استعادة من الأرشيف",
+                                                                        tint = Color(0xFF10B981),
+                                                                        modifier = Modifier.size(20.dp)
+                                                                    )
+                                                                }
+                                                            } else {
+                                                                IconButton(
+                                                                    onClick = { onTogglePinProject(project) },
+                                                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = if (project.isPinned) Icons.Default.Star else Icons.Default.StarBorder,
+                                                                        contentDescription = "تثبيت المشروع",
+                                                                        tint = if (project.isPinned) Color(0xFFFBBF24) else visual.secondaryText,
+                                                                        modifier = Modifier.size(20.dp)
+                                                                    )
+                                                                }
+                                                                IconButton(
+                                                                    onClick = {
+                                                                        onCopyText(project.name, project.currentPromptText ?: project.rawIdea, false)
+                                                                    },
+                                                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.ContentCopy,
+                                                                        contentDescription = "نسخ البرومبت",
+                                                                        tint = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
+                                                                        modifier = Modifier.size(18.dp)
+                                                                    )
+                                                                }
                                                             }
                                                             IconButton(
-                                                                onClick = {
-                                                                    onCopyText(project.name, project.currentPromptText ?: project.rawIdea)
-                                                                },
-                                                                modifier = Modifier.minimumInteractiveComponentSize()
-                                                            ) {
-                                                                Icon(
-                                                                    imageVector = Icons.Default.ContentCopy,
-                                                                    contentDescription = "نسخ البرومبت",
-                                                                    tint = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
-                                                                    modifier = Modifier.size(18.dp)
-                                                                )
-                                                            }
-                                                            IconButton(
-                                                                onClick = { onDeleteProject(project) },
-                                                                modifier = Modifier.minimumInteractiveComponentSize()
+                                                                onClick = { projectPendingDelete = project },
+                                                                modifier = Modifier.minimumInteractiveComponentSize().testTag("delete_project_btn_${project.id}")
                                                             ) {
                                                                 Icon(
                                                                     imageVector = Icons.Default.DeleteOutline,
@@ -451,6 +550,7 @@ fun MainAppScreen(
                                                 }
                                             }
                                         }
+                                    }
                                     }
                                 }
                             }
@@ -482,11 +582,13 @@ fun MainAppScreen(
                                                         activeStudioProject = it
                                                         activeTab = 1
                                                     },
+                                                    onEditPrompt = { projectToEditPrompt = it },
+                                                    onArchiveProject = onArchiveProject,
                                                     onShareProject = onShareProject,
                                                     onExportPdf = onExportPdf,
                                                     onExportStarterZip = onExportStarterZip,
                                                     onCopyPrompt = {
-                                                        onCopyText(it.name, it.currentPromptText ?: it.rawIdea)
+                                                        onCopyText(it.name, it.currentPromptText ?: it.rawIdea, false)
                                                     }
                                                 )
                                             } else {
@@ -507,6 +609,7 @@ fun MainAppScreen(
                                 serverUrl = currentServerUrl,
                                 isWideScreen = isWideScreen,
                                 onSelectProject = { proj -> activeStudioProject = proj },
+                                onEditPrompt = { projectToEditPrompt = it },
                                 onUpdateProjectPrompt = onUpdateProjectPrompt,
                                 onAnalyzeWireframeUri = onAnalyzeWireframeUri,
                                 onCopyText = onCopyText,
@@ -630,6 +733,8 @@ fun MainAppScreen(
                                         rowModels.forEach { model ->
                                             val isRamSafe = availableRamMB >= model.requiredRamMB
                                             val statusText = downloadStatusMap[model.id]
+                                            val isDownloaded = model.id in downloadedModelIds
+                                            val isDownloading = model.id in activeDownloadingIds
                                             Card(
                                                 colors = CardDefaults.cardColors(containerColor = visual.surfaceBg),
                                                 elevation = CardDefaults.cardElevation(defaultElevation = visual.cardElevation),
@@ -670,22 +775,55 @@ fun MainAppScreen(
                                                         verticalAlignment = Alignment.CenterVertically
                                                     ) {
                                                         Text(
-                                                            text = if (isRamSafe) "✓ متوافق (${model.requiredRamMB} MB)"
-                                                            else "⚠️ يتطلب ${model.requiredRamMB} MB",
-                                                            color = if (isRamSafe) Color(0xFF10B981) else Color(0xFFD97706),
+                                                            text = when {
+                                                                isDownloaded -> "✓ مُنزّل وجاهز محلياً"
+                                                                isRamSafe -> "✓ متوافق (${model.requiredRamMB} MB)"
+                                                                else -> "⚠️ يتطلب ${model.requiredRamMB} MB"
+                                                            },
+                                                            color = when {
+                                                                isDownloaded -> Color(0xFF10B981)
+                                                                isRamSafe -> Color(0xFF10B981)
+                                                                else -> Color(0xFFD97706)
+                                                            },
                                                             fontSize = 10.sp,
                                                             modifier = Modifier.weight(1f)
                                                         )
-                                                        Button(
-                                                            onClick = { onDownloadModel(model) },
-                                                            enabled = isRamSafe,
-                                                            colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                                            modifier = Modifier.heightIn(min = 36.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                            Spacer(modifier = Modifier.width(4.dp))
-                                                            Text("تنزيل", fontSize = 11.sp)
+                                                        when {
+                                                            isDownloading -> {
+                                                                OutlinedButton(
+                                                                    onClick = { onCancelModelDownload(model) },
+                                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                                    modifier = Modifier.heightIn(min = 38.dp).testTag("cancel_model_${model.id}")
+                                                                ) {
+                                                                    Icon(Icons.Default.Close, contentDescription = "إلغاء التنزيل", modifier = Modifier.size(14.dp), tint = Color(0xFFEF4444))
+                                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                                    Text("إلغاء", fontSize = 11.sp, color = Color(0xFFEF4444))
+                                                                }
+                                                            }
+                                                            isDownloaded -> {
+                                                                OutlinedButton(
+                                                                    onClick = { onDeleteDownloadedModel(model) },
+                                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                                    modifier = Modifier.heightIn(min = 38.dp).testTag("delete_model_${model.id}")
+                                                                ) {
+                                                                    Icon(Icons.Default.DeleteOutline, contentDescription = "حذف النموذج", modifier = Modifier.size(14.dp), tint = Color(0xFFEF4444))
+                                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                                    Text("حذف الملف", fontSize = 11.sp, color = Color(0xFFEF4444))
+                                                                }
+                                                            }
+                                                            else -> {
+                                                                Button(
+                                                                    onClick = { onDownloadModel(model) },
+                                                                    enabled = isRamSafe,
+                                                                    colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                                    modifier = Modifier.heightIn(min = 38.dp).testTag("download_model_${model.id}")
+                                                                ) {
+                                                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                                    Text("تنزيل", fontSize = 11.sp)
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                     if (!statusText.isNullOrBlank()) {
@@ -736,7 +874,7 @@ fun MainAppScreen(
                                                 IdeCodeTerminalViewer(
                                                     title = "Research Output",
                                                     codeText = researchResult,
-                                                    onCopy = { onCopyText("نتيجة البحث", researchResult) }
+                                                    onCopy = { onCopyText("نتيجة البحث", researchResult, false) }
                                                 )
                                             }
                                         }
@@ -762,7 +900,8 @@ fun MainAppScreen(
         ServerConfigDialog(
             currentServerUrl = currentServerUrl,
             onDismiss = { showServerDialog = false },
-            onSaveServerUrl = onUpdateServerUrl
+            onSaveServerUrl = onUpdateServerUrl,
+            onResetDefaultUrl = onResetServerUrl
         )
     }
 
@@ -786,10 +925,18 @@ fun MainAppScreen(
                             selectedProjectForDialog = null
                             activeTab = 1
                         },
+                        onEditPrompt = {
+                            selectedProjectForDialog = null
+                            projectToEditPrompt = it
+                        },
+                        onArchiveProject = {
+                            selectedProjectForDialog = null
+                            onArchiveProject(it)
+                        },
                         onShareProject = onShareProject,
                         onExportPdf = onExportPdf,
                         onExportStarterZip = onExportStarterZip,
-                        onCopyPrompt = { onCopyText(it.name, it.currentPromptText ?: it.rawIdea) }
+                        onCopyPrompt = { onCopyText(it.name, it.currentPromptText ?: it.rawIdea, false) }
                     )
                 }
             },
@@ -802,6 +949,33 @@ fun MainAppScreen(
                 }
             },
             containerColor = visual.surfaceBg
+        )
+    }
+
+    projectToEditPrompt?.let { proj ->
+        EditPromptDialog(
+            project = proj,
+            onDismiss = { projectToEditPrompt = null },
+            onSavePrompt = { updatedText ->
+                onUpdateProjectPrompt(proj, updatedText, "✓ تم حفظ تعديلات البرومبت والمواصفات بنجاح")
+            }
+        )
+    }
+
+    projectPendingDelete?.let { proj ->
+        DeleteProjectConfirmDialog(
+            project = proj,
+            onConfirm = {
+                if (selectedProjectForDialog?.id == proj.id) {
+                    selectedProjectForDialog = null
+                }
+                if (activeStudioProject?.id == proj.id) {
+                    activeStudioProject = null
+                }
+                onDeleteProject(proj)
+                projectPendingDelete = null
+            },
+            onDismiss = { projectPendingDelete = null }
         )
     }
 }

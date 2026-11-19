@@ -36,9 +36,10 @@ fun ChainedStudioWorkspace(
     serverUrl: String,
     isWideScreen: Boolean = false,
     onSelectProject: (ProjectEntity) -> Unit,
+    onEditPrompt: (ProjectEntity) -> Unit,
     onUpdateProjectPrompt: (ProjectEntity, String, String) -> Unit,
     onAnalyzeWireframeUri: (ProjectEntity, Uri) -> Unit,
-    onCopyText: (String, String) -> Unit,
+    onCopyText: (String, String, Boolean) -> Unit,
     onExportMarkdown: (ProjectEntity, String) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
@@ -205,6 +206,15 @@ fun ChainedStudioWorkspace(
                         Text("تحليل مخطط بصري", fontSize = 11.sp)
                     }
                 }
+
+                OutlinedButton(
+                    onClick = { onEditPrompt(activeProject) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp).testTag("studio_edit_prompt_button")
+                ) {
+                    Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("تحرير نص البرومبت يدوياً مع مؤشر الجودة المباشر", fontSize = 11.sp)
+                }
             }
         }
     }
@@ -257,7 +267,7 @@ fun ChainedStudioWorkspace(
                 IdeCodeTerminalViewer(
                     title = stages[selectedStage],
                     codeText = stageContent,
-                    onCopy = { onCopyText(stages[selectedStage], stageContent) }
+                    onCopy = { onCopyText(stages[selectedStage], stageContent, false) }
                 )
 
                 Row(
@@ -282,7 +292,7 @@ fun ChainedStudioWorkspace(
                     }
 
                     OutlinedButton(
-                        onClick = { onCopyText("مرحلة هندسية", stageContent) },
+                        onClick = { onCopyText("مرحلة هندسية", stageContent, false) },
                         modifier = Modifier.weight(0.9f).heightIn(min = 42.dp),
                         contentPadding = PaddingValues(8.dp)
                     ) {
@@ -361,7 +371,7 @@ fun EnterpriseSuiteSection(
     activeProject: ProjectEntity?,
     isWideScreen: Boolean = false,
     onAppendSecurityToProject: (ProjectEntity, String) -> Unit,
-    onCopyText: (String, String) -> Unit,
+    onCopyText: (String, String, Boolean) -> Unit,
     onBackupAllProjects: () -> Unit,
     onRestoreBackupProjects: () -> Unit
 ) {
@@ -369,15 +379,20 @@ fun EnterpriseSuiteSection(
     var selectedMau by remember { mutableIntStateOf(10000) }
     var vaultInputText by remember { mutableStateOf("") }
     var vaultOutputText by remember { mutableStateOf("") }
+    var vaultErrorText by remember { mutableStateOf<String?>(null) }
+    var vaultStatusText by remember { mutableStateOf<String?>(null) }
 
     val finOps = remember(selectedMau) {
         VaultAndEnterpriseManager.calculateFinOps(mau = selectedMau, dailyPrompts = 6)
     }
 
-    val owaspList = remember(activeProject?.id) {
+    val owaspList = remember(activeProject?.id, activeProject?.currentPromptText, activeProject?.updatedAt) {
         if (activeProject != null) {
             VaultAndEnterpriseManager.auditProjectSecurity(activeProject)
         } else emptyList()
+    }
+    val securityScore = remember(owaspList) {
+        VaultAndEnterpriseManager.calculateSecurityScore(owaspList)
     }
 
     val finOpsCard: @Composable () -> Unit = {
@@ -464,15 +479,40 @@ fun EnterpriseSuiteSection(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(visual.contentPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(Icons.Default.Security, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
-                    Text(
-                        text = "التدقيق الأمني للمشروع (OWASP MASVS & API Top 10)",
-                        fontWeight = FontWeight.Bold,
-                        color = visual.primaryText,
-                        fontSize = (13f + visual.fontDelta).sp
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Security, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
+                        Text(
+                            text = "التدقيق الأمني الذكي (OWASP Live Scanner)",
+                            fontWeight = FontWeight.Bold,
+                            color = visual.primaryText,
+                            fontSize = (13f + visual.fontDelta).sp
+                        )
+                    }
+                    Surface(
+                        color = if (securityScore >= 80) Color(0xFF065F46) else Color(0xFF991B1B),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "الجاهزية $securityScore%",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
                 }
+
+                LinearProgressIndicator(
+                    progress = { securityScore / 100f },
+                    color = if (securityScore >= 80) Color(0xFF10B981) else Color(0xFFF59E0B),
+                    trackColor = visual.recessedBg,
+                    modifier = Modifier.fillMaxWidth().height(7.dp)
+                )
 
                 owaspList.forEach { item ->
                     Surface(
@@ -483,12 +523,23 @@ fun EnterpriseSuiteSection(
                         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(item.title, color = visual.primaryText, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                                 Text(
-                                    text = "${item.code} (${item.severity})",
-                                    color = if (item.severity == "CRITICAL") Color(0xFFEF4444) else Color(0xFFD97706),
+                                    text = item.title,
+                                    color = visual.primaryText,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = if (item.isPassed) "✓ آمن" else "${item.code} (${item.severity})",
+                                    color = when {
+                                        item.isPassed -> Color(0xFF10B981)
+                                        item.severity == "CRITICAL" -> Color(0xFFEF4444)
+                                        else -> Color(0xFFD97706)
+                                    },
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -499,22 +550,32 @@ fun EnterpriseSuiteSection(
                 }
 
                 if (activeProject != null) {
+                    val missingControls = owaspList.filter { !it.isPassed }
                     Button(
                         onClick = {
                             val secBlock = buildString {
                                 appendLine("\n## متطلبات الأمان الإلزامية المعتمدة (OWASP MASVS & API Security)")
-                                owaspList.forEach {
-                                    appendLine("- **[${it.code}] ${it.title}:** ${it.recommendation}")
+                                appendLine("- **[MASVS-STORAGE-1]** تشفير التخزين المحلي عبر Android KeyStore AES-256-GCM.")
+                                appendLine("- **[OWASP API1:2023]** التحقق من صلاحيات المالك (BOLA / Row-Level Security / Auth).")
+                                appendLine("- **[OWASP API4:2023]** تطبيق Rate Limiting (سقف الطلبات 30 طلب/دقيقة) وحماية DoS.")
+                                appendLine("- **[MASVS-NETWORK-1]** فرض HTTPS/TLS فقط مع تعطيل Cleartext Traffic.")
+                                if (activeProject.targetPlatform.equals("WEB", ignoreCase = true)) {
+                                    appendLine("- **[OWASP A03:2021]** تفعيل Content-Security-Policy (CSP) وحماية XSS و CSRF.")
                                 }
                             }
                             onAppendSecurityToProject(activeProject, secBlock)
                         },
+                        enabled = missingControls.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp)
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("auto_harden_owasp_button")
                     ) {
                         Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(15.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("حقن ضوابط OWASP الأمنية في برومبت المشروع النشط", fontSize = 11.sp)
+                        Text(
+                            text = if (missingControls.isEmpty()) "✓ المشروع محصّن بالكامل وفق OWASP (100%)"
+                            else "تحصين تلقائي وحقن ${missingControls.size} ضوابط OWASP ناقصة",
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }
@@ -543,41 +604,72 @@ fun EnterpriseSuiteSection(
 
                     OutlinedTextField(
                         value = vaultInputText,
-                        onValueChange = { vaultInputText = it },
+                        onValueChange = {
+                            vaultInputText = it
+                            vaultErrorText = null
+                        },
                         label = { Text("أدخل نصاً سرياً أو مفتاح API لتشفيره أو فك تشفيره...") },
                         minLines = 2,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().testTag("vault_input_field")
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         Button(
                             onClick = {
-                                if (vaultInputText.isNotBlank()) {
-                                    vaultOutputText = VaultAndEnterpriseManager.encryptText(vaultInputText)
-                                }
+                                VaultAndEnterpriseManager.encryptSafely(vaultInputText)
+                                    .onSuccess { encrypted ->
+                                        vaultOutputText = encrypted
+                                        vaultErrorText = null
+                                        vaultStatusText = "✓ تم التشفير العتادي بنجاح عبر Android KeyStore AES-256-GCM"
+                                    }
+                                    .onFailure { err ->
+                                        vaultStatusText = null
+                                        vaultErrorText = err.message ?: "تعذر تشفير النص المدخل."
+                                    }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                            modifier = Modifier.weight(1f).heightIn(min = 42.dp)
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("vault_encrypt_button")
                         ) {
                             Text("تشفير AES-256", fontSize = 11.sp)
                         }
                         OutlinedButton(
                             onClick = {
-                                if (vaultInputText.isNotBlank()) {
-                                    vaultOutputText = VaultAndEnterpriseManager.decryptText(vaultInputText)
-                                }
+                                VaultAndEnterpriseManager.decryptSafely(vaultInputText)
+                                    .onSuccess { decrypted ->
+                                        vaultOutputText = decrypted
+                                        vaultErrorText = null
+                                        vaultStatusText = "✓ تم فك التشفير بنجاح والتحقق من سلامة GCM"
+                                    }
+                                    .onFailure { err ->
+                                        vaultStatusText = null
+                                        vaultErrorText = err.message ?: "فشل فك التشفير."
+                                    }
                             },
-                            modifier = Modifier.weight(1f).heightIn(min = 42.dp)
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("vault_decrypt_button")
                         ) {
                             Text("فك التشفير", fontSize = 11.sp)
                         }
                     }
 
+                    if (!vaultErrorText.isNullOrBlank()) {
+                        Text(
+                            text = "⚠️ $vaultErrorText",
+                            color = Color(0xFFEF4444),
+                            fontSize = (11f + visual.fontDelta).sp
+                        )
+                    } else if (!vaultStatusText.isNullOrBlank()) {
+                        Text(
+                            text = vaultStatusText!!,
+                            color = Color(0xFF10B981),
+                            fontSize = (11f + visual.fontDelta).sp
+                        )
+                    }
+
                     if (vaultOutputText.isNotBlank()) {
                         IdeCodeTerminalViewer(
-                            title = "AES-256-GCM Payload",
+                            title = "AES-256-GCM Payload (حافظة محمية)",
                             codeText = vaultOutputText,
-                            onCopy = { onCopyText("محتوى الخزنة", vaultOutputText) }
+                            onCopy = { onCopyText("محتوى الخزنة المشفّر", vaultOutputText, true) }
                         )
                     }
                 }
@@ -592,28 +684,33 @@ fun EnterpriseSuiteSection(
             ) {
                 Column(modifier = Modifier.padding(visual.contentPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "النسخ الاحتياطي المحلي الشامل (JSON Backup & Restore)",
+                        text = "النسخ الاحتياطي المشفّر (AES-256-GCM + SHA-256 Backup)",
                         fontWeight = FontWeight.Bold,
                         color = visual.primaryText,
                         fontSize = (13f + visual.fontDelta).sp
+                    )
+                    Text(
+                        text = "يتم تشفير النسخة الاحتياطية عتادياً والتحقق من بصمتها الرقمية SHA-256 تلقائياً عند الاستعادة.",
+                        color = visual.secondaryText,
+                        fontSize = 10.sp
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         Button(
                             onClick = onBackupAllProjects,
                             colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                            modifier = Modifier.weight(1f).heightIn(min = 42.dp)
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("encrypted_backup_button")
                         ) {
                             Icon(Icons.Default.Backup, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("حفظ نسخة JSON", fontSize = 11.sp)
+                            Text("نسخة مشفّرة", fontSize = 11.sp)
                         }
                         OutlinedButton(
                             onClick = onRestoreBackupProjects,
-                            modifier = Modifier.weight(1f).heightIn(min = 42.dp)
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("encrypted_restore_button")
                         ) {
                             Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("استعادة النسخة", fontSize = 11.sp)
+                            Text("استعادة وتدقيق", fontSize = 11.sp)
                         }
                     }
                 }

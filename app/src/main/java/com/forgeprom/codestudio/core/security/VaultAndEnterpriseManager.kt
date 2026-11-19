@@ -25,7 +25,8 @@ object VaultAndEnterpriseManager {
         val code: String,
         val title: String,
         val severity: String,
-        val recommendation: String
+        val recommendation: String,
+        val isPassed: Boolean = false
     )
 
     data class FinOpsEstimate(
@@ -54,8 +55,12 @@ object VaultAndEnterpriseManager {
 
     /**
      * Encrypts sensitive project payload using Hardware-backed Android KeyStore AES-256-GCM
+     * with explicit Result reporting.
      */
-    fun encryptText(plainText: String): String {
+    fun encryptSafely(plainText: String): Result<String> {
+        if (plainText.isBlank()) {
+            return Result.failure(IllegalArgumentException("يرجى إدخال نص صالح قبل التشفير."))
+        }
         return try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
@@ -67,54 +72,145 @@ object VaultAndEnterpriseManager {
                 put("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
                 put("payload", Base64.encodeToString(encrypted, Base64.NO_WRAP))
             }
-            json.toString()
+            Result.success(json.toString())
         } catch (e: Exception) {
-            plainText
+            Result.failure(IllegalStateException("تعذر التشفير العتادي عبر KeyStore: ${e.localizedMessage ?: "خطأ غير معروف"}"))
         }
     }
 
     /**
-     * Decrypts AES-256-GCM payload from Android KeyStore
+     * Decrypts AES-256-GCM payload from Android KeyStore with explicit validation & Result reporting.
      */
-    fun decryptText(encryptedJson: String): String {
+    fun decryptSafely(encryptedJson: String): Result<String> {
+        if (encryptedJson.isBlank()) {
+            return Result.failure(IllegalArgumentException("يرجى إدخال حزمة JSON المشفرة أولاً."))
+        }
         return try {
-            val json = JSONObject(encryptedJson)
+            val json = JSONObject(encryptedJson.trim())
+            if (!json.has("iv") || !json.has("payload")) {
+                return Result.failure(IllegalArgumentException("صيغة النص المدخل غير صالحة لفك التشفير (يجب أن يحتوي على حقلي iv و payload)."))
+            }
             val iv = Base64.decode(json.getString("iv"), Base64.NO_WRAP)
             val payload = Base64.decode(json.getString("payload"), Base64.NO_WRAP)
 
             val cipher = Cipher.getInstance(TRANSFORMATION)
             val spec = GCMParameterSpec(128, iv)
             cipher.init(Cipher.DECRYPT_MODE, getOrCreateSecretKey(), spec)
-            String(cipher.doFinal(payload), Charsets.UTF_8)
+            Result.success(String(cipher.doFinal(payload), Charsets.UTF_8))
         } catch (e: Exception) {
-            encryptedJson
+            Result.failure(IllegalArgumentException("فشل فك التشفير: تأكد أن النص مُشفّر على هذا الجهاز بصيغة Forgeprom AES-256-GCM."))
         }
     }
 
     /**
-     * Runs OWASP API & Mobile MASVS Security Audit on a ProjectEntity
+     * Backward-compatible wrapper returning encrypted payload or original text on failure.
+     */
+    fun encryptText(plainText: String): String = encryptSafely(plainText).getOrDefault(plainText)
+
+    /**
+     * Backward-compatible wrapper returning decrypted text or original input on failure.
+     */
+    fun decryptText(encryptedJson: String): String = decryptSafely(encryptedJson).getOrDefault(encryptedJson)
+
+    /**
+     * Runs dynamic, context-aware OWASP API & Mobile MASVS Security Audit on a ProjectEntity.
+     * Inspects prompt text, raw idea, and target platform to detect real missing controls or leaks.
      */
     fun auditProjectSecurity(project: ProjectEntity): List<OwaspAuditItem> {
-        return listOf(
-            OwaspAuditItem(
-                code = "OWASP API1:2023",
-                title = "حماية صلاحيات الوصول للسجلات (BOLA / Row-Level Security)",
-                severity = "CRITICAL",
-                recommendation = "تفعيل التحقق من هوية المالك (Owner UID) لكل وثيقة في المشروع (${project.name})."
-            ),
+        val combined = "${project.name}\n${project.description}\n${project.rawIdea}\n${project.currentPromptText.orEmpty()}"
+        val lower = combined.lowercase()
+
+        val hasCleartextRisk = lower.contains("http://") && !lower.contains("https://")
+        val hasSecretLeakRisk = Regex("(sk-[a-zA-Z0-9]{12,}|AIza[0-9A-Za-z\\-_]{20,}|password\\s*=\\s*['\"][^'\"]+['\"])").containsMatchIn(combined)
+        val hasEncryptionSpec = lower.contains("aes") || lower.contains("keystore") || lower.contains("تشفير") || lower.contains("gcm")
+        val hasAccessControlSpec = lower.contains("bola") || lower.contains("rls") || lower.contains("auth") || lower.contains("صلاحيات") || lower.contains("مالك") || lower.contains("oauth")
+        val hasRateLimitSpec = lower.contains("rate limit") || lower.contains("rate limiting") || lower.contains("سقف الطلبات") || lower.contains("throttle")
+        val isWeb = project.targetPlatform.equals("WEB", ignoreCase = true)
+        val hasWebHardening = lower.contains("csp") || lower.contains("xss") || lower.contains("csrf") || lower.contains("owasp")
+
+        val items = mutableListOf(
             OwaspAuditItem(
                 code = "MASVS-STORAGE-1",
                 title = "تشفير التخزين المحلي عبر Android KeyStore AES-256-GCM",
                 severity = "HIGH",
-                recommendation = "استخدام خزنة Forgeprom المشفرة لحماية مسودات الكود ومفاتيح الخوادم."
+                recommendation = if (hasEncryptionSpec) {
+                    "✓ تم توثيق التشفير المحلي في مواصفات المشروع (${project.name})."
+                } else {
+                    "أضف شرط استخدام خزنة التشفير AES-256-GCM لحماية السجلات والمفاتيح المحلية."
+                },
+                isPassed = hasEncryptionSpec
+            ),
+            OwaspAuditItem(
+                code = "OWASP API1:2023",
+                title = "حماية صلاحيات الوصول للسجلات (BOLA / Row-Level Security)",
+                severity = "CRITICAL",
+                recommendation = if (hasAccessControlSpec) {
+                    "✓ ضوابط التحقق من الصلاحيات والمالك موثقة في المواصفات."
+                } else {
+                    "فعّل التحقق من هوية المالك (Owner UID) ومنع الوصول المباشر غير المصرح للسجلات في (${project.name})."
+                },
+                isPassed = hasAccessControlSpec
             ),
             OwaspAuditItem(
                 code = "OWASP API4:2023",
-                title = "حماية نقاط الذكاء الاصطناعي بـ Rate Limiting",
+                title = "حماية نقاط الذكاء الاصطناعي والـ API بـ Rate Limiting",
                 severity = "HIGH",
-                recommendation = "تحديد سقف الطلبات بـ 30 طلب/دقيقة لكل مستخدم لمنع استنزاف الموارد."
+                recommendation = if (hasRateLimitSpec) {
+                    "✓ تم تضمين قيود معدل الطلبات ومنع استنزاف الموارد."
+                } else {
+                    "حدد سقف الطلبات (مثلاً 30 طلب/دقيقة لكل مستخدم) مع مهلة اتصال قصيرة لمنع DoS."
+                },
+                isPassed = hasRateLimitSpec
+            ),
+            OwaspAuditItem(
+                code = "MASVS-NETWORK-1",
+                title = "فرض التشفير الكامل للنقل (HTTPS / TLS Only)",
+                severity = if (hasCleartextRisk) "CRITICAL" else "MEDIUM",
+                recommendation = if (!hasCleartextRisk) {
+                    "✓ لا توجد روابط HTTP غير مشفرة في مواصفات المشروع."
+                } else {
+                    "تحذير: تم رصد رابط http:// غير مشفر! استبدله بـ https:// وفعّل usesCleartextTraffic=\"false\"."
+                },
+                isPassed = !hasCleartextRisk
+            ),
+            OwaspAuditItem(
+                code = "MASVS-CODE-2",
+                title = "خلو المواصفات من مفاتيح API أو كلمات مرور مكشوفة",
+                severity = "CRITICAL",
+                recommendation = if (!hasSecretLeakRisk) {
+                    "✓ لم يتم رصد أي مفاتيح API أو كلمات مرور نصية مكشوفة."
+                } else {
+                    "تحذير حرج: تم رصد نمط يشبه مفتاح API أو كلمة مرور نصية! أزله فوراً وشفّره عبر الخزنة."
+                },
+                isPassed = !hasSecretLeakRisk
             )
         )
+
+        if (isWeb) {
+            items.add(
+                OwaspAuditItem(
+                    code = "OWASP A03:2021",
+                    title = "حماية تطبيقات الويب من XSS و CSRF وتفعيل CSP",
+                    severity = "HIGH",
+                    recommendation = if (hasWebHardening) {
+                        "✓ تم توثيق معايير الحماية الخاصة بمنصة الويب."
+                    } else {
+                        "أضف ترويسات Content-Security-Policy وتطهير مدخلات المستخدم وحماية CSRF لتطبيق الويب."
+                    },
+                    isPassed = hasWebHardening
+                )
+            )
+        }
+        return items
+    }
+
+    /**
+     * Computes live Security Readiness Score (0..100) from OWASP audit results.
+     */
+    fun calculateSecurityScore(items: List<OwaspAuditItem>): Int {
+        if (items.isEmpty()) return 100
+        val passedCount = items.count { it.isPassed }
+        return ((passedCount * 100) / items.size).coerceIn(0, 100)
     }
 
     /**
@@ -133,17 +229,28 @@ object VaultAndEnterpriseManager {
         )
     }
 
+    private fun escapeYamlDoubleQuoted(raw: String): String {
+        return raw
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .trim()
+    }
+
     /**
-     * Generates OpenAPI 3.1 YAML Specification for the project
+     * Generates sanitized OpenAPI 3.1 YAML Specification (protected against YAML injection)
      */
     fun generateOpenApiSpec(project: ProjectEntity, serverUrl: String): String {
+        val safeTitle = escapeYamlDoubleQuoted(project.name)
+        val safeUrl = escapeYamlDoubleQuoted(serverUrl)
         return """
             openapi: 3.1.0
             info:
-              title: "${project.name} API"
+              title: "$safeTitle API"
               version: "2.5.0"
             servers:
-              - url: "$serverUrl"
+              - url: "$safeUrl"
             paths:
               /api/v1/health:
                 get:

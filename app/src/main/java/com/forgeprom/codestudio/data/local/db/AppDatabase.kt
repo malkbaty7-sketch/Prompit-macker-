@@ -11,11 +11,17 @@ interface ProjectDao {
     @Query("SELECT * FROM projects WHERE isArchived = 0 ORDER BY isPinned DESC, updatedAt DESC")
     fun getActiveProjectsFlow(): Flow<List<ProjectEntity>>
 
+    @Query("SELECT * FROM projects WHERE isArchived = 1 ORDER BY updatedAt DESC")
+    fun getArchivedProjectsFlow(): Flow<List<ProjectEntity>>
+
     @Query("SELECT * FROM projects WHERE id = :id LIMIT 1")
     suspend fun getProjectById(id: String): ProjectEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrUpdate(project: ProjectEntity)
+
+    @Query("UPDATE projects SET isArchived = :archived, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setArchived(id: String, archived: Boolean, updatedAt: Long = System.currentTimeMillis())
 
     @Delete
     suspend fun delete(project: ProjectEntity)

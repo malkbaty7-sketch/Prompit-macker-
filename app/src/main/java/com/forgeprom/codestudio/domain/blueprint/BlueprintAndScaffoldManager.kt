@@ -1,6 +1,7 @@
 package com.forgeprom.codestudio.domain.blueprint
 
 import android.content.Context
+import android.os.Environment
 import com.forgeprom.codestudio.core.security.VaultAndEnterpriseManager
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
@@ -90,10 +91,16 @@ object BlueprintAndScaffoldManager {
         project: ProjectEntity,
         serverUrl: String = "https://api.forgeprom.local"
     ): File {
-        val exportDir = File(context.filesDir, "scaffolds")
+        val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
+        val exportDir = File(baseDir, "ForgepromScaffolds")
         if (!exportDir.exists()) exportDir.mkdirs()
 
-        val safeName = project.name.replace(Regex("[^a-zA-Z0-9\\u0600-\\u06FF_]"), "_").take(40)
+        val safeName = project.name
+            .replace(Regex("[^a-zA-Z0-9\\u0600-\\u06FF_-]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_')
+            .take(40)
+            .ifBlank { "Forgeprom_Project" }
         val zipFile = File(exportDir, "${safeName}_Full_Scaffold.zip")
 
         val pipeline = PromptEngineeringEngine.generateChainedPipeline(project, serverUrl)
@@ -212,6 +219,8 @@ data class CoreRecordEntity(
             zos.closeEntry()
 
             // 8. Presentation Layer
+            val safeKtName = escapeKotlinString(project.name)
+            val safeKtDesc = escapeKotlinString(project.description)
             zos.putNextEntry(ZipEntry("src/main/java/com/generated/app/presentation/MainScreen.kt"))
             zos.write(
                 """
@@ -227,9 +236,9 @@ import androidx.compose.ui.unit.dp
 fun GeneratedMainScreen() {
     Scaffold { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-            Text(text = "${project.name}", style = MaterialTheme.typography.headlineSmall)
+            Text(text = "$safeKtName", style = MaterialTheme.typography.headlineSmall)
             Spacer(modifier = Modifier.height(8.dp))
-            Text(text = "${project.description}", style = MaterialTheme.typography.bodyMedium)
+            Text(text = "$safeKtDesc", style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -239,5 +248,15 @@ fun GeneratedMainScreen() {
         }
 
         return zipFile
+    }
+
+    private fun escapeKotlinString(raw: String): String {
+        return raw
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("$", "\\$")
+            .replace("\r", " ")
+            .replace("\n", "\\n")
+            .trim()
     }
 }

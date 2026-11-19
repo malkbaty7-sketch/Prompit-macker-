@@ -1,10 +1,16 @@
 package com.forgeprom.codestudio
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.forgeprom.codestudio.core.export.NativeShareAndPdfHelper
 import com.forgeprom.codestudio.core.hardware.HardwareProfiler
@@ -22,8 +28,13 @@ import com.forgeprom.codestudio.data.remote.ModelDownloadManager
 import com.forgeprom.codestudio.domain.blueprint.BlueprintAndScaffoldManager
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
 import com.forgeprom.codestudio.presentation.screens.MainAppScreen
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -88,10 +99,11 @@ class MainActivity : ComponentActivity() {
 
             ForgepromTheme(visualSettings = visualSettings) {
                 val projects by database.projectDao().getActiveProjectsFlow().collectAsState(initial = emptyList())
+                val archivedProjects by database.projectDao().getArchivedProjectsFlow().collectAsState(initial = emptyList())
                 val networkState by networkMonitor.observeNetworkState().collectAsState(
                     initial = networkMonitor.getCurrentNetworkState()
                 )
-                val availableRam = remember { hardwareProfiler.getAvailableRamMB() }
+                var availableRam by remember { mutableLongStateOf(hardwareProfiler.getAvailableRamMB()) }
                 val models = remember { modelDownloadManager.getRecommendedModels() }
                 val blueprints = remember { BlueprintAndScaffoldManager.getReadyBlueprints() }
 
@@ -99,24 +111,103 @@ class MainActivity : ComponentActivity() {
                 var isCheckingServer by remember { mutableStateOf(false) }
                 var currentServerUrl by remember { mutableStateOf(cloudApiService.getServerUrl()) }
                 var downloadStatusMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+                var downloadedModelIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+                val activeDownloadJobs = remember { mutableStateMapOf<String, Job>() }
                 var researchResult by remember { mutableStateOf("") }
                 var isResearching by remember { mutableStateOf(false) }
                 var actionFeedback by remember { mutableStateOf<String?>(null) }
+                var lastExportedFile by remember { mutableStateOf<Pair<File, String>?>(null) }
+                var feedbackJob by remember { mutableStateOf<Job?>(null) }
+                var pendingModelDownload by remember { mutableStateOf<ModelDownloadManager.GgufModelInfo?>(null) }
 
-                fun showFeedback(msg: String) {
-                    lifecycleScope.launch {
+                fun showFeedback(msg: String, exportedFile: Pair<File, String>? = null) {
+                    feedbackJob?.cancel()
+                    lastExportedFile = exportedFile
+                    feedbackJob = lifecycleScope.launch {
                         actionFeedback = msg
-                        delay(4000)
+                        delay(if (exportedFile != null) 7500 else 4200)
                         actionFeedback = null
+                        lastExportedFile = null
+                    }
+                }
+
+                fun refreshDeviceTelemetry() {
+                    lifecycleScope.launch {
+                        val (ramMb, installedIds) = withContext(Dispatchers.IO) {
+                            val ram = hardwareProfiler.getAvailableRamMB()
+                            val installed = models.filter { modelDownloadManager.isModelDownloaded(it) }
+                                .map { it.id }
+                                .toSet()
+                            ram to installed
+                        }
+                        availableRam = ramMb
+                        downloadedModelIds = installedIds
+                    }
+                }
+
+                fun startActualModelDownload(model: ModelDownloadManager.GgufModelInfo) {
+                    if (activeDownloadJobs.containsKey(model.id)) {
+                        showFeedback("ℹ️ التنزيل قيد التقدم بالفعل للنموذج: ${model.name}")
+                        return
+                    }
+                    val job = lifecycleScope.launch {
+                        ForegroundGenerationService.startTask(
+                            this@MainActivity,
+                            "تنزيل النموذج ${model.name}",
+                            "جارٍ التنزيل والتحقق من ترويسة GGUF و SHA-256..."
+                        )
+                        try {
+                            modelDownloadManager.downloadModelWithResume(model).collect { progress ->
+                                val statusMsg = when (progress) {
+                                    is ModelDownloadManager.DownloadProgress.CheckingMemory ->
+                                        "جارٍ فحص الذاكرة العشوائية (${progress.availableMB} MB)..."
+                                    is ModelDownloadManager.DownloadProgress.Downloading ->
+                                        "جارٍ التنزيل: ${progress.progressPercent}% (${progress.downloadedMB} / ${progress.totalMB} MB)"
+                                    is ModelDownloadManager.DownloadProgress.VerifyingChecksum ->
+                                        "جارٍ التحقق من البصمة الرقمية SHA-256..."
+                                    is ModelDownloadManager.DownloadProgress.Completed -> {
+                                        "✓ اكتمل التنزيل بنجاح (SHA-256: ${progress.sha256.take(12)}...)"
+                                    }
+                                    is ModelDownloadManager.DownloadProgress.Failed -> {
+                                        "⚠️ ${progress.reason}"
+                                    }
+                                }
+                                downloadStatusMap = downloadStatusMap + (model.id to statusMsg)
+                            }
+                        } catch (_: CancellationException) {
+                            downloadStatusMap = downloadStatusMap + (model.id to "تم إيقاف التنزيل (يمكنك الاستكمال لاحقاً)")
+                        } finally {
+                            activeDownloadJobs.remove(model.id)
+                            if (activeDownloadJobs.isEmpty()) {
+                                ForegroundGenerationService.stopTask(this@MainActivity)
+                            }
+                            refreshDeviceTelemetry()
+                        }
+                    }
+                    activeDownloadJobs[model.id] = job
+                }
+
+                val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { _ ->
+                    // نبدأ التنزيل بسلاسة سواء وافق المستخدم على الإشعارات أو رفضها
+                    pendingModelDownload?.let { model ->
+                        pendingModelDownload = null
+                        startActualModelDownload(model)
                     }
                 }
 
                 fun checkServer() {
                     lifecycleScope.launch {
                         isCheckingServer = true
+                        availableRam = hardwareProfiler.getAvailableRamMB()
                         serverStatus = cloudApiService.checkServerConnection()
                         isCheckingServer = false
                     }
+                }
+
+                LaunchedEffect(Unit) {
+                    refreshDeviceTelemetry()
                 }
 
                 LaunchedEffect(networkState.isOnline, networkState.isAirplaneMode) {
@@ -125,6 +216,7 @@ class MainActivity : ComponentActivity() {
 
                 MainAppScreen(
                     projects = projects,
+                    archivedProjects = archivedProjects,
                     availableRamMB = availableRam,
                     networkState = networkState,
                     serverStatus = serverStatus,
@@ -133,9 +225,12 @@ class MainActivity : ComponentActivity() {
                     models = models,
                     blueprints = blueprints,
                     downloadStatusMap = downloadStatusMap,
+                    downloadedModelIds = downloadedModelIds,
+                    activeDownloadingIds = activeDownloadJobs.keys.toSet(),
                     researchResult = researchResult,
                     isResearching = isResearching,
                     actionFeedback = actionFeedback,
+                    lastExportedFile = lastExportedFile,
                     visualSettings = visualSettings,
                     onUpdateVisualSettings = { updateAndSaveVisualSettings(it) },
                     onToggle3DDepth = {
@@ -162,88 +257,161 @@ class MainActivity : ComponentActivity() {
                     onCheckServer = { checkServer() },
                     onUpdateServerUrl = { newUrl ->
                         cloudApiService.setServerUrl(newUrl)
-                        currentServerUrl = cloudApiService.getServerUrl()
+                            .onSuccess { cleaned ->
+                                currentServerUrl = cleaned
+                                showFeedback("🔒 تم حفظ رابط الخادم المشفّر (HTTPS): $cleaned")
+                                checkServer()
+                            }
+                            .onFailure { err ->
+                                showFeedback("⚠️ ${err.message ?: "رابط الخادم غير صالح"}")
+                            }
+                    },
+                    onResetServerUrl = {
+                        currentServerUrl = cloudApiService.resetToDefaultUrl()
+                        showFeedback("✓ تمت استعادة الخادم الافتراضي الآمن")
                         checkServer()
                     },
                     onDownloadModel = { model ->
-                        lifecycleScope.launch {
-                            ForegroundGenerationService.startTask(
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            ContextCompat.checkSelfPermission(
                                 this@MainActivity,
-                                "تنزيل النموذج ${model.name}",
-                                "جارٍ التنزيل والتحقق من SHA-256..."
-                            )
-                            modelDownloadManager.downloadModelWithResume(model).collect { progress ->
-                                val statusMsg = when (progress) {
-                                    is ModelDownloadManager.DownloadProgress.CheckingMemory ->
-                                        "جارٍ فحص الذاكرة العشوائية (${progress.availableMB} MB)..."
-                                    is ModelDownloadManager.DownloadProgress.Downloading ->
-                                        "جارٍ التنزيل: ${progress.progressPercent}% (${progress.downloadedMB} / ${progress.totalMB} MB)"
-                                    is ModelDownloadManager.DownloadProgress.VerifyingChecksum ->
-                                        "جارٍ التحقق من البصمة الرقمية SHA-256..."
-                                    is ModelDownloadManager.DownloadProgress.Completed -> {
-                                        ForegroundGenerationService.stopTask(this@MainActivity)
-                                        "✓ اكتمل التنزيل والتحقق من SHA-256 بنجاح"
-                                    }
-                                    is ModelDownloadManager.DownloadProgress.Failed -> {
-                                        ForegroundGenerationService.stopTask(this@MainActivity)
-                                        "⚠️ ${progress.reason}"
-                                    }
-                                }
-                                downloadStatusMap = downloadStatusMap + (model.id to statusMsg)
+                                Manifest.permission.POST_NOTIFICATIONS
+                            ) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            pendingModelDownload = model
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            startActualModelDownload(model)
+                        }
+                    },
+                    onCancelModelDownload = { model ->
+                        activeDownloadJobs.remove(model.id)?.cancel()
+                        if (activeDownloadJobs.isEmpty()) {
+                            ForegroundGenerationService.stopTask(this@MainActivity)
+                        }
+                        downloadStatusMap = downloadStatusMap + (model.id to "تم إلغاء التنزيل (يمكنك الاستكمال من نقطة التوقف لاحقاً)")
+                        showFeedback("تم إيقاف تنزيل النموذج: ${model.name}")
+                    },
+                    onDeleteDownloadedModel = { model ->
+                        lifecycleScope.launch {
+                            val deleted = withContext(Dispatchers.IO) {
+                                modelDownloadManager.deleteDownloadedModel(model)
+                            }
+                            if (deleted) {
+                                downloadStatusMap = downloadStatusMap - model.id
+                                refreshDeviceTelemetry()
+                                showFeedback("🗑️ تم حذف ملف النموذج لتحرير المساحة: ${model.name}")
+                            } else {
+                                showFeedback("⚠️ تعذر حذف ملف النموذج أو أنه غير موجود.")
                             }
                         }
                     },
                     onRunResearch = { query ->
                         lifecycleScope.launch {
                             isResearching = true
-                            researchResult = cloudApiService.performTechnicalResearch(query)
-                            isResearching = false
+                            try {
+                                researchResult = cloudApiService.performTechnicalResearch(query)
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر إتمام البحث التقني حالياً.")
+                            } finally {
+                                isResearching = false
+                            }
                         }
                     },
                     onUseBlueprint = { bp ->
                         lifecycleScope.launch {
-                            database.projectDao().insertOrUpdate(
-                                ProjectEntity(
-                                    id = UUID.randomUUID().toString(),
-                                    name = bp.title,
-                                    description = bp.description,
-                                    type = "NEW_APP",
-                                    targetPlatform = bp.targetPlatform,
-                                    rawIdea = bp.rawIdea,
-                                    currentPromptText = bp.prebuiltPrompt
+                            try {
+                                database.projectDao().insertOrUpdate(
+                                    ProjectEntity(
+                                        id = UUID.randomUUID().toString(),
+                                        name = bp.title,
+                                        description = bp.description,
+                                        type = "NEW_APP",
+                                        targetPlatform = bp.targetPlatform,
+                                        rawIdea = bp.rawIdea,
+                                        currentPromptText = bp.prebuiltPrompt
+                                    )
                                 )
-                            )
-                            showFeedback("✓ تم إنشاء المشروع من قالب: ${bp.title}")
+                                showFeedback("✓ تم إنشاء المشروع من قالب: ${bp.title}")
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر حفظ المشروع من القالب.")
+                            }
                         }
                     },
                     onShareProject = { proj ->
-                        NativeShareAndPdfHelper.shareProjectPrompt(this@MainActivity, proj)
+                        val shared = NativeShareAndPdfHelper.shareProjectPrompt(this@MainActivity, proj)
+                        if (!shared) {
+                            showFeedback("⚠️ لا يوجد تطبيق متاح للمشاركة على هذا الجهاز.")
+                        }
+                    },
+                    onShareExportedFile = { file, mimeType ->
+                        val shared = NativeShareAndPdfHelper.shareExportedFile(this@MainActivity, file, mimeType)
+                        if (!shared) {
+                            showFeedback("⚠️ تعذر فتح قائمة مشاركة الملف على هذا الجهاز.")
+                        }
                     },
                     onExportPdf = { proj ->
-                        val file = NativeShareAndPdfHelper.generateNativeRtlPdf(this@MainActivity, proj)
-                        showFeedback("✓ تم حفظ ملف PDF العربي المتعدد الصفحات في: ${file.name}")
+                        lifecycleScope.launch {
+                            try {
+                                val file = withContext(Dispatchers.IO) {
+                                    NativeShareAndPdfHelper.generateNativeRtlPdf(this@MainActivity, proj)
+                                }
+                                showFeedback(
+                                    "✓ تم حفظ PDF العربي: ${file.name}",
+                                    exportedFile = file to "application/pdf"
+                                )
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر توليد ملف PDF العربي — تحقق من المساحة التخزينية.")
+                            }
+                        }
                     },
                     onExportStarterZip = { proj ->
-                        val file = BlueprintAndScaffoldManager.generateStarterBoilerplateZip(
-                            this@MainActivity,
-                            proj,
-                            currentServerUrl
-                        )
-                        showFeedback("✓ تم توليد أرشيف الكود المتكامل: ${file.name}")
+                        lifecycleScope.launch {
+                            try {
+                                val file = withContext(Dispatchers.IO) {
+                                    BlueprintAndScaffoldManager.generateStarterBoilerplateZip(
+                                        this@MainActivity,
+                                        proj,
+                                        currentServerUrl
+                                    )
+                                }
+                                showFeedback(
+                                    "✓ تم توليد أرشيف الكود المتكامل: ${file.name}",
+                                    exportedFile = file to "application/zip"
+                                )
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر توليد أرشيف الكود ZIP — تحقق من المساحة التخزينية.")
+                            }
+                        }
                     },
                     onExportMarkdown = { proj, customContent ->
-                        val file = NativeShareAndPdfHelper.exportMarkdownSpec(this@MainActivity, proj, customContent)
-                        showFeedback("✓ تم تصدير وثيقة Markdown: ${file.name}")
+                        lifecycleScope.launch {
+                            try {
+                                val file = withContext(Dispatchers.IO) {
+                                    NativeShareAndPdfHelper.exportMarkdownSpec(this@MainActivity, proj, customContent)
+                                }
+                                showFeedback(
+                                    "✓ تم تصدير وثيقة Markdown: ${file.name}",
+                                    exportedFile = file to "text/markdown"
+                                )
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر تصدير ملف Markdown.")
+                            }
+                        }
                     },
                     onUpdateProjectPrompt = { proj, updatedPrompt, feedbackMsg ->
                         lifecycleScope.launch {
-                            database.projectDao().insertOrUpdate(
-                                proj.copy(
-                                    currentPromptText = updatedPrompt.trim(),
-                                    updatedAt = System.currentTimeMillis()
+                            try {
+                                database.projectDao().insertOrUpdate(
+                                    proj.copy(
+                                        currentPromptText = updatedPrompt.trim(),
+                                        updatedAt = System.currentTimeMillis()
+                                    )
                                 )
-                            )
-                            showFeedback(feedbackMsg)
+                                showFeedback(feedbackMsg)
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر تحديث البرومبت في قاعدة البيانات.")
+                            }
                         }
                     },
                     onTogglePinProject = { proj ->
@@ -257,79 +425,116 @@ class MainActivity : ComponentActivity() {
                             showFeedback(if (!proj.isPinned) "⭐ تم تثبيت المشروع في الأعلى" else "تم إلغاء تثبيت المشروع")
                         }
                     },
+                    onArchiveProject = { proj ->
+                        lifecycleScope.launch {
+                            database.projectDao().setArchived(proj.id, archived = true)
+                            showFeedback("📦 تم نقل المشروع إلى الأرشيف الآمن: ${proj.name}")
+                        }
+                    },
+                    onRestoreArchivedProject = { proj ->
+                        lifecycleScope.launch {
+                            database.projectDao().setArchived(proj.id, archived = false)
+                            showFeedback("✓ تمت استعادة المشروع من الأرشيف: ${proj.name}")
+                        }
+                    },
                     onDeleteProject = { proj ->
                         lifecycleScope.launch {
                             database.projectDao().deleteById(proj.id)
-                            showFeedback("🗑️ تم حذف المشروع: ${proj.name}")
+                            showFeedback("🗑️ تم حذف المشروع نهائياً: ${proj.name}")
                         }
                     },
                     onAnalyzeWireframeUri = { proj, uri ->
                         lifecycleScope.launch {
-                            val visionSpec = PromptEngineeringEngine.analyzeWireframeImage(
-                                this@MainActivity,
-                                uri,
-                                proj.name
-                            )
-                            val merged = buildString {
-                                appendLine(proj.currentPromptText ?: proj.rawIdea)
-                                appendLine("\n---\n")
-                                appendLine(visionSpec)
-                            }
-                            database.projectDao().insertOrUpdate(
-                                proj.copy(
-                                    currentPromptText = merged,
-                                    updatedAt = System.currentTimeMillis()
+                            try {
+                                val visionSpec = withContext(Dispatchers.IO) {
+                                    PromptEngineeringEngine.analyzeWireframeImage(
+                                        this@MainActivity,
+                                        uri,
+                                        proj.name
+                                    )
+                                }
+                                val merged = buildString {
+                                    appendLine(proj.currentPromptText ?: proj.rawIdea)
+                                    appendLine("\n---\n")
+                                    appendLine(visionSpec)
+                                }
+                                database.projectDao().insertOrUpdate(
+                                    proj.copy(
+                                        currentPromptText = merged,
+                                        updatedAt = System.currentTimeMillis()
+                                    )
                                 )
-                            )
-                            showFeedback("✓ تم تحليل المخطط البصري وإلحاق مواصفات UI/UX بالمشروع")
+                                showFeedback("✓ تم تحليل المخطط البصري وإلحاق مواصفات UI/UX بالمشروع")
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر قراءة وتحليل الصورة المختارة.")
+                            }
                         }
                     },
-                    onCopyText = { label, text ->
-                        NativeShareAndPdfHelper.copyToClipboard(this@MainActivity, label, text)
-                        showFeedback("✓ تم نسخ ($label) إلى الحافظة")
+                    onCopyText = { label, text, isSensitive ->
+                        NativeShareAndPdfHelper.copyToClipboard(this@MainActivity, label, text, isSensitive)
+                        showFeedback(
+                            if (isSensitive) "🔒 تم نسخ ($label) بحماية الحافظة الحساسة (مخفي في معاينة Android 13+)"
+                            else "✓ تم نسخ ($label) إلى الحافظة"
+                        )
                     },
                     onBackupAllProjects = {
                         lifecycleScope.launch {
-                            val file = NativeShareAndPdfHelper.exportAllProjectsBackupJson(this@MainActivity, projects)
-                            showFeedback("✓ تم حفظ النسخة الاحتياطية لجميع المشاريع: ${file.name}")
+                            try {
+                                val snapshot = (projects + archivedProjects).distinctBy { it.id }
+                                val result = withContext(Dispatchers.IO) {
+                                    NativeShareAndPdfHelper.exportAllProjectsBackupJson(this@MainActivity, snapshot)
+                                }
+                                val modeTag = if (result.isEncrypted) "مشفّرة AES-256" else "JSON"
+                                showFeedback("🔒 تم حفظ نسخة احتياطية ($modeTag • SHA:${result.sha256Short}) لـ ${snapshot.size} مشاريع")
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر حفظ النسخة الاحتياطية المشفّرة.")
+                            }
                         }
                     },
                     onRestoreBackupProjects = {
                         lifecycleScope.launch {
-                            val restored = NativeShareAndPdfHelper.restoreProjectsFromBackupJson(this@MainActivity)
-                            if (restored.isNotEmpty()) {
-                                restored.forEach { database.projectDao().insertOrUpdate(it) }
-                                showFeedback("✓ تمت استعادة ${restored.size} مشاريع من النسخة الاحتياطية بنجاح")
-                            } else {
-                                showFeedback("ℹ️ لا توجد نسخة احتياطية محفوظة مسبقاً للاستعادة")
+                            try {
+                                val restored = withContext(Dispatchers.IO) {
+                                    NativeShareAndPdfHelper.restoreProjectsFromBackupJson(this@MainActivity)
+                                }
+                                if (restored.errorMessage != null) {
+                                    showFeedback("⚠️ ${restored.errorMessage}")
+                                } else if (restored.projects.isNotEmpty()) {
+                                    restored.projects.forEach { database.projectDao().insertOrUpdate(it) }
+                                    val badge = if (restored.wasEncrypted) "✓ تم فك تشفير والتحقق من SHA-256 واستعادة" else "✓ تمت استعادة"
+                                    showFeedback("$badge ${restored.projects.size} مشاريع بنجاح")
+                                } else {
+                                    showFeedback("ℹ️ لا توجد نسخة احتياطية محفوظة مسبقاً للاستعادة")
+                                }
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر استعادة النسخة الاحتياطية.")
                             }
                         }
                     },
-                    onNewProject = { name, idea ->
+                    onNewProject = { name, idea, targetPlatform ->
                         lifecycleScope.launch {
-                            ForegroundGenerationService.startTask(
-                                this@MainActivity,
-                                "تحليل مشروع: $name",
-                                "جارٍ توليد المواصفات الهندسية..."
-                            )
-                            val generatedPrompt = cloudApiService.analyzeAndGeneratePrompt(
-                                idea = idea.ifBlank { name },
-                                targetPlatform = "ANDROID_KOTLIN"
-                            ).getOrNull()
+                            showFeedback("⏳ جارٍ تحليل الفكرة وتوليد المواصفات الهندسية...")
+                            try {
+                                val generatedPrompt = cloudApiService.analyzeAndGeneratePrompt(
+                                    idea = idea.ifBlank { name },
+                                    targetPlatform = targetPlatform
+                                ).getOrNull()
 
-                            database.projectDao().insertOrUpdate(
-                                ProjectEntity(
-                                    id = UUID.randomUUID().toString(),
-                                    name = name,
-                                    description = idea.ifBlank { name }.take(140),
-                                    type = "NEW_APP",
-                                    targetPlatform = "ANDROID_KOTLIN",
-                                    rawIdea = idea,
-                                    currentPromptText = generatedPrompt
+                                database.projectDao().insertOrUpdate(
+                                    ProjectEntity(
+                                        id = UUID.randomUUID().toString(),
+                                        name = name,
+                                        description = idea.ifBlank { name }.take(140),
+                                        type = "NEW_APP",
+                                        targetPlatform = targetPlatform,
+                                        rawIdea = idea.ifBlank { name },
+                                        currentPromptText = generatedPrompt
+                                    )
                                 )
-                            )
-                            ForegroundGenerationService.stopTask(this@MainActivity)
-                            showFeedback("✓ تم حفظ المشروع وتوليد البرومبت الهندسي بنجاح")
+                                showFeedback("✓ تم حفظ المشروع وتوليد البرومبت الهندسي بنجاح")
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ حدث خطأ أثناء إنشاء المشروع وحفظه.")
+                            }
                         }
                     },
                     onSelectProject = { }
