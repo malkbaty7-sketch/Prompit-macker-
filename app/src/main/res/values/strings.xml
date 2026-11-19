@@ -1,4 +1,10 @@
 <resources>
     <string name="app_name">Forgeprom Code Studio</string>
     <string name="tagline">استوديو هندسة البرومبتات والأنظمة الذكية</string>
+    <string name="shortcut_new_project_short">مشروع جديد</string>
+    <string name="shortcut_new_project_long">إنشاء مشروع هندسي جديد</string>
+    <string name="shortcut_studio_short">الاستوديو</string>
+    <string name="shortcut_studio_long">فتح استوديو السلسلة الهندسية</string>
+    <string name="shortcut_security_short">التدقيق الأمني</string>
+    <string name="shortcut_security_long">فتح فحص الأمان والنسخ المشفّر</string>
 </resources>

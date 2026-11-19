@@ -25,6 +25,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -35,6 +37,7 @@ import com.forgeprom.codestudio.core.ui.CardVisualStyle
 import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.core.ui.StudioVisualSettings
+import com.forgeprom.codestudio.core.ux.LocalOfflineTtsReader
 import java.util.Locale
 
 /**
@@ -597,6 +600,7 @@ fun VisualArchitectureBlueprintCanvas(
 
 /**
  * 5. عارض الأكواد والبرومبتات الاحترافي المتكيف مع السمة (Adaptive IDE Code Terminal Viewer)
+ * يدعم البحث والتظليل الفوري، الاستماع الصوتي المحلي (TTS)، ووضع القراءة بملء الشاشة.
  */
 @Composable
 fun IdeCodeTerminalViewer(
@@ -605,11 +609,25 @@ fun IdeCodeTerminalViewer(
     onCopy: () -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val ttsReader = LocalOfflineTtsReader.current
+    val ttsState by (ttsReader?.state?.collectAsState() ?: remember { mutableStateOf(null) })
+    val haptic = LocalHapticFeedback.current
+
     var fontSizeSp by remember(visual.densityMode) {
         mutableIntStateOf((11 + visual.fontDelta.toInt()).coerceIn(9, 16))
     }
+    var showInlineSearch by remember { mutableStateOf(false) }
+    var inlineSearchQuery by remember { mutableStateOf("") }
+    var showFullScreenReader by remember { mutableStateOf(false) }
+
     val lines = remember(codeText) { codeText.lines() }
+    val matchCount = remember(codeText, inlineSearchQuery) {
+        if (inlineSearchQuery.isBlank()) 0
+        else Regex(Regex.escape(inlineSearchQuery), RegexOption.IGNORE_CASE).findAll(codeText).count()
+    }
     val terminalBg = if (visual.isDarkTheme) Color(0xFF090E14) else Color(0xFF141E2B)
+    val contentId = remember(title, codeText) { "term_${title.hashCode()}_${codeText.length}" }
+    val isSpeakingThis = ttsState?.isSpeaking == true && ttsState?.activeContentId == contentId
 
     Surface(
         color = terminalBg,
@@ -648,8 +666,62 @@ fun IdeCodeTerminalViewer(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
                 ) {
+                    // بحث وتظليل داخلي
+                    Surface(
+                        color = if (showInlineSearch) visual.accentPrimary.copy(alpha = 0.55f) else Color(0xFF1E2D3D),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.clickable {
+                            showInlineSearch = !showInlineSearch
+                            if (!showInlineSearch) inlineSearchQuery = ""
+                        }.testTag("terminal_search_toggle")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "بحث داخل النص",
+                            tint = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp).size(14.dp)
+                        )
+                    }
+
+                    // قراءة صوتية محلية (Offline TTS)
+                    if (ttsReader != null && ttsState?.isReady == true) {
+                        Surface(
+                            color = if (isSpeakingThis) Color(0xFF065F46) else Color(0xFF1E2D3D),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                ttsReader.toggleSpeak(contentId, codeText)
+                            }.testTag("terminal_tts_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isSpeakingThis) Icons.Default.Stop else Icons.Default.VolumeUp,
+                                contentDescription = if (isSpeakingThis) "إيقاف القراءة الصوتية" else "استماع صوتي",
+                                tint = if (isSpeakingThis) Color(0xFF34D399) else Color.White,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp).size(14.dp)
+                            )
+                        }
+                    }
+
+                    // ملء الشاشة
+                    Surface(
+                        color = Color(0xFF1E2D3D),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            showFullScreenReader = true
+                        }.testTag("terminal_fullscreen_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Fullscreen,
+                            contentDescription = "قراءة بملء الشاشة",
+                            tint = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp).size(14.dp)
+                        )
+                    }
+
                     Surface(
                         color = Color(0xFF1E2D3D),
                         shape = RoundedCornerShape(6.dp),
@@ -659,7 +731,7 @@ fun IdeCodeTerminalViewer(
                             text = "-A",
                             color = Color.White,
                             fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                         )
                     }
                     Surface(
@@ -671,20 +743,57 @@ fun IdeCodeTerminalViewer(
                             text = "+A",
                             color = Color.White,
                             fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                         )
                     }
                     Surface(
                         color = visual.accentPrimary.copy(alpha = 0.45f),
                         shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.clickable { onCopy() }
+                        modifier = Modifier.clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onCopy()
+                        }
                     ) {
                         Text(
                             text = "نسخ",
                             color = Color.White,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            if (showInlineSearch) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF0E1621))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedTextField(
+                        value = inlineSearchQuery,
+                        onValueChange = { inlineSearchQuery = it },
+                        placeholder = { Text("ابحث داخل الكود...", fontSize = 10.sp, color = Color(0xFF94A3B8)) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = visual.accentSecondary,
+                            unfocusedBorderColor = Color(0xFF334155)
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f).testTag("terminal_inline_search_input")
+                    )
+                    if (inlineSearchQuery.isNotBlank()) {
+                        Text(
+                            text = "$matchCount نتائج",
+                            color = if (matchCount > 0) Color(0xFF34D399) else Color(0xFFEF4444),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -716,7 +825,12 @@ fun IdeCodeTerminalViewer(
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
-                            text = line.ifBlank { " " },
+                            text = buildHighlightedLine(
+                                text = line.ifBlank { " " },
+                                query = inlineSearchQuery,
+                                highlightBg = Color(0xFFFBBF24),
+                                highlightFg = Color(0xFF090E14)
+                            ),
                             color = lineColor,
                             fontSize = fontSizeSp.sp,
                             lineHeight = (fontSizeSp + 5).sp,
@@ -728,5 +842,14 @@ fun IdeCodeTerminalViewer(
                 }
             }
         }
+    }
+
+    if (showFullScreenReader) {
+        FullScreenCodeReaderDialog(
+            title = title,
+            codeText = codeText,
+            onCopy = onCopy,
+            onDismiss = { showFullScreenReader = false }
+        )
     }
 }

@@ -1,13 +1,20 @@
 package com.forgeprom.codestudio.data.local.model
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * كيان بيانات المشروع المحلي (Room Database Entity)
- * تخزين محلي كامل 100% بدون أي اعتمادية على شبكة الإنترنت.
+ * مزوّد بفهارس SQLite مركّبة لتسريع الفرز والبحث والتصفية محلياً 100%.
  */
-@Entity(tableName = "projects")
+@Entity(
+    tableName = "projects",
+    indices = [
+        Index(value = ["isArchived", "isPinned", "updatedAt"], name = "idx_projects_listing"),
+        Index(value = ["targetPlatform"], name = "idx_projects_platform")
+    ]
+)
 data class ProjectEntity(
     @PrimaryKey
     val id: String,

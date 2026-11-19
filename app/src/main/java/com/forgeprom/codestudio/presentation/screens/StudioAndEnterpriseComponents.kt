@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.forgeprom.codestudio.core.export.NativeShareAndPdfHelper
 import com.forgeprom.codestudio.core.security.VaultAndEnterpriseManager
 import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
@@ -43,6 +44,7 @@ fun ChainedStudioWorkspace(
     isWideScreen: Boolean = false,
     onSelectProject: (ProjectEntity) -> Unit,
     onEditPrompt: (ProjectEntity) -> Unit,
+    onOpenVersionHistory: (ProjectEntity) -> Unit = {},
     onUpdateProjectPrompt: (ProjectEntity, String, String) -> Unit,
     onAnalyzeWireframeUri: (ProjectEntity, Uri) -> Unit,
     onCopyText: (String, String, Boolean) -> Unit,
@@ -289,13 +291,28 @@ fun ChainedStudioWorkspace(
                     }
                 }
 
-                OutlinedButton(
-                    onClick = { onEditPrompt(activeProject) },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp).testTag("studio_edit_prompt_button")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("تحرير نص البرومبت يدوياً مع مؤشر الجودة المباشر", fontSize = 11.sp)
+                    OutlinedButton(
+                        onClick = { onEditPrompt(activeProject) },
+                        modifier = Modifier.weight(1.2f).heightIn(min = 44.dp).testTag("studio_edit_prompt_button"),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("تحرير البرومبت", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    OutlinedButton(
+                        onClick = { onOpenVersionHistory(activeProject) },
+                        modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("studio_version_history_button"),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("سجل الإصدارات", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         }
@@ -495,21 +512,57 @@ fun ChainedStudioWorkspace(
 fun EnterpriseSuiteSection(
     activeProject: ProjectEntity?,
     isWideScreen: Boolean = false,
+    exportCacheStats: NativeShareAndPdfHelper.ExportCacheStats = NativeShareAndPdfHelper.ExportCacheStats(0, 0L),
+    onClearExportCache: () -> Unit = {},
     onAppendSecurityToProject: (ProjectEntity, String) -> Unit,
     onCopyText: (String, String, Boolean) -> Unit,
     onBackupAllProjects: () -> Unit,
-    onRestoreBackupProjects: () -> Unit
+    onRestoreBackupProjects: () -> Unit,
+    onExportBackupToUri: (Uri, String?) -> Unit = { _, _ -> },
+    onRestoreBackupFromUri: (Uri, String?, () -> Unit) -> Unit = { _, _, _ -> }
 ) {
     val visual = LocalStudioVisualSettings.current
     val adaptive = LocalAdaptiveScreenSpec.current
     var selectedMau by remember { mutableIntStateOf(10000) }
+    var dailyPrompts by remember { mutableIntStateOf(6) }
+    var selectedModelTier by remember { mutableIntStateOf(0) } // 0 = 1.5B (76%), 1 = 3B Pro (88%)
     var vaultInputText by remember { mutableStateOf("") }
     var vaultOutputText by remember { mutableStateOf("") }
     var vaultErrorText by remember { mutableStateOf<String?>(null) }
     var vaultStatusText by remember { mutableStateOf<String?>(null) }
+    var portablePassword by remember { mutableStateOf("") }
+    var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
+    var showRestorePasswordDialog by remember { mutableStateOf(false) }
+    var restorePasswordInput by remember { mutableStateOf("") }
 
-    val finOps = remember(selectedMau) {
-        VaultAndEnterpriseManager.calculateFinOps(mau = selectedMau, dailyPrompts = 6)
+    val safExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            onExportBackupToUri(uri, portablePassword.trim().ifBlank { null })
+        }
+    }
+
+    val safImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            pendingRestoreUri = uri
+            onRestoreBackupFromUri(uri, portablePassword.trim().ifBlank { null }) {
+                showRestorePasswordDialog = true
+            }
+        }
+    }
+
+    val finOps = remember(selectedMau, dailyPrompts, selectedModelTier) {
+        val offload = if (selectedModelTier == 1) 0.88 else 0.76
+        val tierLabel = if (selectedModelTier == 1) "Qwen 2.5 3B Pro" else "Qwen 2.5 1.5B"
+        VaultAndEnterpriseManager.calculateFinOps(
+            mau = selectedMau,
+            dailyPrompts = dailyPrompts,
+            localOffloadRatio = offload,
+            modelTierLabel = tierLabel
+        )
     }
 
     val owaspList = remember(activeProject?.id, activeProject?.currentPromptText, activeProject?.updatedAt) {
@@ -550,9 +603,21 @@ fun EnterpriseSuiteSection(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    Surface(
+                        color = Color(0xFF065F46),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "وفر ${finOps.savingsPercent}%",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
+                    }
                     ContextualHelpIconButton(
                         title = "حاسبة التوفير FinOps وعدد المستخدمين (MAU)",
-                        explanation = "تقارن هذه الحاسبة تكلفة تشغيل الذكاء الاصطناعي سحابياً بالكامل مقابل الوضع الهجين المحلي (GGUF) بناءً على عدد المستخدمين النشطين شهرياً (MAU) لتقدير الوفورات السنوية بدقة.",
+                        explanation = "تقارن هذه الحاسبة تكلفة تشغيل الذكاء الاصطناعي سحابياً بالكامل مقابل الوضع الهجين المحلي (GGUF) بناءً على عدد المستخدمين النشطين شهرياً (MAU) ومعدل الطلبات اليومية وحجم النموذج المحلي.",
                         testTag = "help_finops_button",
                         modifier = Modifier.size(30.dp)
                     )
@@ -575,6 +640,49 @@ fun EnterpriseSuiteSection(
                             label = { Text("${mauOption / 1000}K", fontSize = 11.sp, maxLines = 1) }
                         )
                     }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "الطلبات اليومية لكل مستخدم: $dailyPrompts طلب/يوم",
+                        color = visual.secondaryText,
+                        fontSize = 11.sp
+                    )
+                    Text(
+                        text = finOps.modelTierLabel,
+                        color = visual.accentSecondary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Slider(
+                    value = dailyPrompts.toFloat(),
+                    onValueChange = { dailyPrompts = it.toInt().coerceIn(2, 24) },
+                    valueRange = 2f..24f,
+                    steps = 21,
+                    modifier = Modifier.fillMaxWidth().testTag("finops_daily_prompts_slider")
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    FilterChip(
+                        selected = selectedModelTier == 0,
+                        onClick = { selectedModelTier = 0 },
+                        label = { Text("نموذج 1.5B (تفريغ 76%)", fontSize = 10.sp, maxLines = 1) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = selectedModelTier == 1,
+                        onClick = { selectedModelTier = 1 },
+                        label = { Text("نموذج 3B Pro (تفريغ 88%)", fontSize = 10.sp, maxLines = 1) },
+                        modifier = Modifier.weight(1f)
+                    )
                 }
 
                 if (adaptive.isUltraCompact || adaptive.isHighFontScale) {
@@ -742,17 +850,10 @@ fun EnterpriseSuiteSection(
                     val missingControls = owaspList.filter { !it.isPassed }
                     Button(
                         onClick = {
-                            val secBlock = buildString {
-                                appendLine("\n## متطلبات الأمان الإلزامية المعتمدة (OWASP MASVS & API Security)")
-                                appendLine("- **[MASVS-STORAGE-1]** تشفير التخزين المحلي عبر Android KeyStore AES-256-GCM.")
-                                appendLine("- **[OWASP API1:2023]** التحقق من صلاحيات المالك (BOLA / Row-Level Security / Auth).")
-                                appendLine("- **[OWASP API4:2023]** تطبيق Rate Limiting (سقف الطلبات 30 طلب/دقيقة) وحماية DoS.")
-                                appendLine("- **[MASVS-NETWORK-1]** فرض HTTPS/TLS فقط مع تعطيل Cleartext Traffic.")
-                                if (activeProject.targetPlatform.equals("WEB", ignoreCase = true)) {
-                                    appendLine("- **[OWASP A03:2021]** تفعيل Content-Security-Policy (CSP) وحماية XSS و CSRF.")
-                                }
+                            val secBlock = VaultAndEnterpriseManager.buildMissingOwaspHardeningBlock(activeProject)
+                            if (secBlock.isNotBlank()) {
+                                onAppendSecurityToProject(activeProject, "\n$secBlock")
                             }
-                            onAppendSecurityToProject(activeProject, secBlock)
                         },
                         enabled = missingControls.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
@@ -762,7 +863,7 @@ fun EnterpriseSuiteSection(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (missingControls.isEmpty()) "✓ المشروع محصّن بالكامل وفق OWASP (100%)"
-                            else "تحصين تلقائي وحقن ${missingControls.size} ضوابط OWASP ناقصة",
+                            else "تحصين جراحي وحقن ${missingControls.size} ضوابط OWASP ناقصة فقط",
                             fontSize = 11.sp
                         )
                     }
@@ -873,15 +974,22 @@ fun EnterpriseSuiteSection(
             ) {
                 Column(modifier = Modifier.padding(visual.contentPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "النسخ الاحتياطي المشفّر (AES-256-GCM + SHA-256 Backup)",
+                        text = "النسخ الاحتياطي المشفّر والمحمول (SAF + PBKDF2 + Smart Merge)",
                         fontWeight = FontWeight.Bold,
                         color = visual.primaryText,
                         fontSize = (13f + visual.fontDelta).sp
                     )
                     Text(
-                        text = "يتم تشفير النسخة الاحتياطية عتادياً والتحقق من بصمتها الرقمية SHA-256 تلقائياً عند الاستعادة.",
+                        text = "ادعم النسخ الداخلي أو تصدير/استيراد ملف خارجي بدون صلاحيات تخزين مع دمج ذكي يحمي تعديلاتك الأحدث.",
                         color = visual.secondaryText,
                         fontSize = 10.sp
+                    )
+                    OutlinedTextField(
+                        value = portablePassword,
+                        onValueChange = { portablePassword = it },
+                        label = { Text("كلمة مرور اختيارية لنقل النسخة لهاتف آخر (PBKDF2)", fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("portable_backup_password_input")
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         Button(
@@ -891,7 +999,7 @@ fun EnterpriseSuiteSection(
                         ) {
                             Icon(Icons.Default.Backup, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("نسخة مشفّرة", fontSize = 11.sp)
+                            Text("حفظ داخلي", fontSize = 11.sp)
                         }
                         OutlinedButton(
                             onClick = onRestoreBackupProjects,
@@ -899,12 +1007,115 @@ fun EnterpriseSuiteSection(
                         ) {
                             Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("استعادة وتدقيق", fontSize = 11.sp)
+                            Text("استعادة داخلية", fontSize = 11.sp)
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { safExportLauncher.launch("forgeprom_portable_backup.json") },
+                            colors = ButtonDefaults.buttonColors(containerColor = visual.accentSecondary),
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("saf_export_backup_button")
+                        ) {
+                            Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تصدير خارجي SAF", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { safImportLauncher.launch(arrayOf("application/json", "*/*")) },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("saf_import_backup_button")
+                        ) {
+                            Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("استيراد ملف SAF", fontSize = 11.sp)
+                        }
+                    }
+
+                    HorizontalDivider(color = visual.recessedBg)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "مخلفات التصدير المؤقتة (PDF / ZIP / MD)",
+                                color = visual.primaryText,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp
+                            )
+                            Text(
+                                text = "${exportCacheStats.fileCount} ملفات • الحجم: ${exportCacheStats.totalSizeKB} KB",
+                                color = visual.secondaryText,
+                                fontSize = 10.sp
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onClearExportCache,
+                            enabled = exportCacheStats.fileCount > 0,
+                            modifier = Modifier.heightIn(min = 42.dp).testTag("clear_export_cache_button")
+                        ) {
+                            Icon(Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تنظيف", fontSize = 11.sp)
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showRestorePasswordDialog && pendingRestoreUri != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showRestorePasswordDialog = false
+                restorePasswordInput = ""
+            },
+            title = { Text("كلمة مرور النسخة المحمولة", fontWeight = FontWeight.Bold, color = visual.primaryText) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "أدخل كلمة المرور المستخدمة عند تصدير هذه النسخة الاحتياطية لفك تشفيرها والتحقق من SHA-256.",
+                        color = visual.secondaryText,
+                        fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = restorePasswordInput,
+                        onValueChange = { restorePasswordInput = it },
+                        label = { Text("كلمة المرور") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("restore_password_dialog_input")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val targetUri = pendingRestoreUri
+                        val pwd = restorePasswordInput.trim()
+                        showRestorePasswordDialog = false
+                        restorePasswordInput = ""
+                        if (targetUri != null && pwd.isNotBlank()) {
+                            onRestoreBackupFromUri(targetUri, pwd) {
+                                showRestorePasswordDialog = true
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary)
+                ) {
+                    Text("فك التشفير والاستعادة")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showRestorePasswordDialog = false
+                    restorePasswordInput = ""
+                }) {
+                    Text("إلغاء", color = visual.secondaryText)
+                }
+            },
+            containerColor = visual.surfaceBg
+        )
     }
 
     if (isWideScreen) {

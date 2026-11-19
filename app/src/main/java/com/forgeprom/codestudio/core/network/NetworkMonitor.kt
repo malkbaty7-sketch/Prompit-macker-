@@ -12,16 +12,21 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /**
- * مراقب حالة الشبكة ووضع الطيران (NetworkMonitor)
- * يكتشف لحظياً حالة الاتصال بالإنترنت أو تفعيل وضع الطيران (Airplane Mode)
- * مع استخدام distinctUntilChanged لمنع إعادة التركيب غير الضرورية للواجهة.
+ * مراقب حالة الشبكة ووضع الطيران والباقة المحدودة (NetworkMonitor)
+ * يكتشف لحظياً:
+ * - الاتصال الفعلي المتحقق منه (NET_CAPABILITY_VALIDATED) مقابل الشبكات المقيدة (Captive Portal).
+ * - الشبكة المحدودة / بيانات الهاتف (Metered) لحماية باقة المستخدم قبل تنزيل النماذج الضخمة.
+ * - تفعيل وضع الطيران (Airplane Mode).
  */
 class NetworkMonitor(private val context: Context) {
 
     data class NetworkState(
         val isOnline: Boolean,
         val isAirplaneMode: Boolean,
-        val connectionType: String
+        val connectionType: String,
+        val isValidated: Boolean = isOnline,
+        val isMetered: Boolean = false,
+        val isCaptivePortal: Boolean = false
     )
 
     fun isAirplaneModeOn(): Boolean {
@@ -41,7 +46,10 @@ class NetworkMonitor(private val context: Context) {
             return NetworkState(
                 isOnline = false,
                 isAirplaneMode = true,
-                connectionType = "وضع الطيران (محلي 100%)"
+                connectionType = "وضع الطيران (محلي 100%)",
+                isValidated = false,
+                isMetered = false,
+                isCaptivePortal = false
             )
         }
 
@@ -50,32 +58,47 @@ class NetworkMonitor(private val context: Context) {
             val network = cm.activeNetwork ?: return NetworkState(
                 isOnline = false,
                 isAirplaneMode = false,
-                connectionType = "غير متصل (محلي 100%)"
+                connectionType = "غير متصل (محلي 100%)",
+                isValidated = false
             )
             val caps = cm.getNetworkCapabilities(network) ?: return NetworkState(
                 isOnline = false,
                 isAirplaneMode = false,
-                connectionType = "غير متصل (محلي 100%)"
+                connectionType = "غير متصل (محلي 100%)",
+                isValidated = false
             )
 
-            val isConnected = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val isCaptivePortal = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
+            val isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+            val isMetered = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) || isCellular
+
+            val isUsableOnline = hasInternet && !isCaptivePortal && isValidated
             val type = when {
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "بيانات الهاتف (Cellular)"
+                isCaptivePortal -> "شبكة مقيدة (تتطلب تسجيل دخول)"
+                !hasInternet -> "غير متصل (محلي 100%)"
+                !isValidated -> "متصل بدون إنترنت فعلي (محلي)"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> if (isMetered) "Wi-Fi (محدود)" else "Wi-Fi"
+                isCellular -> "بيانات الهاتف (باقة محدودة)"
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
                 else -> "متصل"
             }
 
             NetworkState(
-                isOnline = isConnected,
+                isOnline = isUsableOnline,
                 isAirplaneMode = false,
-                connectionType = if (isConnected) type else "غير متصل (محلي 100%)"
+                connectionType = type,
+                isValidated = isValidated,
+                isMetered = isMetered,
+                isCaptivePortal = isCaptivePortal
             )
         } catch (_: Exception) {
             NetworkState(
                 isOnline = false,
                 isAirplaneMode = false,
-                connectionType = "غير متصل (محلي 100%)"
+                connectionType = "غير متصل (محلي 100%)",
+                isValidated = false
             )
         }
     }

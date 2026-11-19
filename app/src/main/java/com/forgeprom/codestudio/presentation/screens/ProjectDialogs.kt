@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
+import com.forgeprom.codestudio.core.ux.LocalOfflineTtsReader
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
 
@@ -434,8 +435,10 @@ fun EditPromptDialog(
 @Composable
 fun ProjectDetailPanelContent(
     project: ProjectEntity,
+    versionCount: Int = 0,
     onOpenInStudio: (ProjectEntity) -> Unit,
     onEditPrompt: (ProjectEntity) -> Unit,
+    onOpenVersionHistory: (ProjectEntity) -> Unit,
     onDuplicateProject: (ProjectEntity) -> Unit,
     onArchiveProject: (ProjectEntity) -> Unit,
     onShareProject: (ProjectEntity) -> Unit,
@@ -445,7 +448,11 @@ fun ProjectDetailPanelContent(
 ) {
     val visual = LocalStudioVisualSettings.current
     val adaptive = LocalAdaptiveScreenSpec.current
+    val ttsReader = LocalOfflineTtsReader.current
+    val ttsState by (ttsReader?.state?.collectAsState() ?: remember { mutableStateOf(null) })
     val promptPreview = project.currentPromptText ?: project.rawIdea
+    val ttsId = "project_detail_${project.id}"
+    val isSpeakingThis = ttsState?.isSpeaking == true && ttsState?.activeContentId == ttsId
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
@@ -543,6 +550,46 @@ fun ProjectDetailPanelContent(
                 Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(14.dp))
                 Spacer(modifier = Modifier.width(3.dp))
                 Text("ZIP", fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OutlinedButton(
+                onClick = { onOpenVersionHistory(project) },
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("version_history_button"),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(
+                    text = if (versionCount > 0) "الإصدارات ($versionCount)" else "سجل الإصدارات",
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (ttsReader != null && ttsState?.isReady == true) {
+                OutlinedButton(
+                    onClick = { ttsReader.toggleSpeak(ttsId, promptPreview) },
+                    modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("project_tts_listen_button"),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isSpeakingThis) Icons.Default.Stop else Icons.Default.VolumeUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = if (isSpeakingThis) "إيقاف القراءة" else "استماع صوتي",
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 

@@ -15,14 +15,15 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 /**
  * مدير تنزيل النماذج المحلية المكمّمة (GGUF Q4_K_M) من خوادم HuggingFace
- * يدعم:
+ * المزايا المطورة:
+ * - التنزيل الذري عبر ملف مرحلي (.part) لا يُعتمد كنموذج نهائي إلا بعد نجاح فحص الترويسة وبصمة SHA-256.
+ * - حساب سرعة التنزيل اللحظية (MB/s) والوقت المتبقي المتوقع (ETA).
+ * - تتبّع حجم الجزء المحمّل مسبقاً لعرض حالة الاستكمال (Resume Ready).
  * - فحص الـ RAM المسبق وفحص المساحة التخزينية المتاحة قبل التنزيل.
- * - استئناف التنزيل الآمن (HTTP 206 Partial Content vs 200 OK) وتتبّع التحويلات (Redirects).
- * - تقييد معدل تحديث التقدم (Throttling) لمنع إغراق خيط الواجهة (UI Thread).
- * - التحقق من ترويسة ملف GGUF السحرية وحساب بصمة SHA-256.
  */
 class ModelDownloadManager(
     private val context: Context,
@@ -43,7 +44,13 @@ class ModelDownloadManager(
 
     sealed class DownloadProgress {
         data class CheckingMemory(val availableMB: Long, val requiredMB: Long) : DownloadProgress()
-        data class Downloading(val progressPercent: Int, val downloadedMB: Long, val totalMB: Long) : DownloadProgress()
+        data class Downloading(
+            val progressPercent: Int,
+            val downloadedMB: Long,
+            val totalMB: Long,
+            val speedMBps: Double = 0.0,
+            val etaSeconds: Long = -1L
+        ) : DownloadProgress()
         data class VerifyingChecksum(val sha256: String) : DownloadProgress()
         data class Completed(val file: File, val sha256: String) : DownloadProgress()
         data class Failed(val reason: String) : DownloadProgress()
@@ -97,14 +104,22 @@ class ModelDownloadManager(
 
     fun getModelFile(model: GgufModelInfo): File = File(getModelsDirectory(), "${model.id}.gguf")
 
+    fun getPartialModelFile(model: GgufModelInfo): File = File(getModelsDirectory(), "${model.id}.gguf.part")
+
+    fun getPartialDownloadedMB(model: GgufModelInfo): Long {
+        val partFile = getPartialModelFile(model)
+        return if (partFile.exists()) partFile.length() / (1024L * 1024L) else 0L
+    }
+
     fun isModelDownloaded(model: GgufModelInfo): Boolean {
         val file = getModelFile(model)
         return file.exists() && file.length() > 1024 * 1024 && hasValidGgufHeader(file)
     }
 
     fun deleteDownloadedModel(model: GgufModelInfo): Boolean {
-        val file = getModelFile(model)
-        return if (file.exists()) file.delete() else false
+        val finalDeleted = getModelFile(model).let { if (it.exists()) it.delete() else false }
+        val partDeleted = getPartialModelFile(model).let { if (it.exists()) it.delete() else false }
+        return finalDeleted || partDeleted
     }
 
     private fun hasValidGgufHeader(file: File): Boolean {
@@ -132,7 +147,7 @@ class ModelDownloadManager(
                 connectTimeout = 12000
                 readTimeout = 20000
                 instanceFollowRedirects = false
-                setRequestProperty("User-Agent", "ForgepromCodeStudio/2.0 (Android)")
+                setRequestProperty("User-Agent", "ForgepromCodeStudio/2.6 (Android)")
                 if (rangeStart > 0) {
                     setRequestProperty("Range", "bytes=$rangeStart-")
                 }
@@ -158,7 +173,7 @@ class ModelDownloadManager(
     }
 
     /**
-     * تنزيل النموذج مع دعم الاستكمال الآمن، فحص المساحة والرام، وتقييد تحديثات الواجهة
+     * تنزيل ذري آمن مع دعم الاستكمال (.part)، حساب سرعة التنزيل (MB/s)، والوقت المتبقي (ETA)
      */
     fun downloadModelWithResume(model: GgufModelInfo): Flow<DownloadProgress> = flow {
         val availRam = hardwareProfiler.getAvailableRamMB()
@@ -174,8 +189,17 @@ class ModelDownloadManager(
         }
 
         val modelsDir = getModelsDirectory()
-        val targetFile = getModelFile(model)
-        val existingBytes = if (targetFile.exists()) targetFile.length() else 0L
+        val finalFile = getModelFile(model)
+        val partFile = getPartialModelFile(model)
+
+        // إذا كان النموذج مكتملاً مسبقاً وسليماً
+        if (isModelDownloaded(model)) {
+            val hash = ChecksumValidator.calculateSha256(finalFile)
+            emit(DownloadProgress.Completed(finalFile, hash))
+            return@flow
+        }
+
+        val existingBytes = if (partFile.exists()) partFile.length() else 0L
         val requiredDiskBytes = ((model.fileSizeMB * 1024L * 1024L) - existingBytes).coerceAtLeast(0L) + (64L * 1024L * 1024L)
         if (modelsDir.usableSpace < requiredDiskBytes) {
             val availSpaceMB = modelsDir.usableSpace / (1024L * 1024L)
@@ -192,11 +216,13 @@ class ModelDownloadManager(
             conn = openConnectionFollowingRedirects(model.downloadUrl, existingBytes)
             val responseCode = conn.responseCode
 
-            // إذا أعاد الخادم 416 فهذا يعني غالباً أن الملف مكتمل مسبقاً
-            if (responseCode == 416 && targetFile.exists() && hasValidGgufHeader(targetFile)) {
-                val calculatedHash = ChecksumValidator.calculateSha256(targetFile)
+            // إذا أعاد الخادم 416 فهذا يعني أن الملف الجزئي اكتمل مسبقاً
+            if (responseCode == 416 && partFile.exists() && hasValidGgufHeader(partFile)) {
+                val calculatedHash = ChecksumValidator.calculateSha256(partFile)
                 emit(DownloadProgress.VerifyingChecksum(calculatedHash))
-                emit(DownloadProgress.Completed(targetFile, calculatedHash))
+                if (finalFile.exists()) finalFile.delete()
+                partFile.renameTo(finalFile)
+                emit(DownloadProgress.Completed(finalFile, calculatedHash))
                 return@flow
             }
 
@@ -212,11 +238,14 @@ class ModelDownloadManager(
 
                 var downloadedBytes = startOffset
                 var lastEmittedPercent = -1
-                var lastEmitTimeMs = 0L
+                var lastEmitTimeMs = System.currentTimeMillis()
+                var lastSpeedCheckTimeMs = lastEmitTimeMs
+                var lastSpeedCheckBytes = downloadedBytes
+                var smoothedSpeedBytesPerSec = 0.0
 
                 conn.inputStream.use { input ->
-                    FileOutputStream(targetFile, isResuming).use { output ->
-                        val buffer = ByteArray(32768)
+                    FileOutputStream(partFile, isResuming).use { output ->
+                        val buffer = ByteArray(65536)
                         var bytesRead: Int
                         while (input.read(buffer).also { bytesRead = it } != -1) {
                             currentCoroutineContext().ensureActive()
@@ -225,14 +254,36 @@ class ModelDownloadManager(
 
                             val percent = ((downloadedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
                             val now = System.currentTimeMillis()
-                            if (percent != lastEmittedPercent || (now - lastEmitTimeMs) >= 350L) {
+                            val elapsedMs = now - lastEmitTimeMs
+                            if (percent != lastEmittedPercent || elapsedMs >= 400L) {
+                                val speedWindowMs = (now - lastSpeedCheckTimeMs).coerceAtLeast(1L)
+                                if (speedWindowMs >= 450L) {
+                                    val deltaBytes = (downloadedBytes - lastSpeedCheckBytes).coerceAtLeast(0L)
+                                    val instantBps = (deltaBytes * 1000.0) / speedWindowMs
+                                    smoothedSpeedBytesPerSec = if (smoothedSpeedBytesPerSec <= 0.0) {
+                                        instantBps
+                                    } else {
+                                        (smoothedSpeedBytesPerSec * 0.65) + (instantBps * 0.35)
+                                    }
+                                    lastSpeedCheckTimeMs = now
+                                    lastSpeedCheckBytes = downloadedBytes
+                                }
+
+                                val speedMBps = smoothedSpeedBytesPerSec / (1024.0 * 1024.0)
+                                val remainingBytes = (totalBytes - downloadedBytes).coerceAtLeast(0L)
+                                val etaSec = if (smoothedSpeedBytesPerSec > 1024.0) {
+                                    (remainingBytes / smoothedSpeedBytesPerSec).toLong()
+                                } else -1L
+
                                 lastEmittedPercent = percent
                                 lastEmitTimeMs = now
                                 emit(
                                     DownloadProgress.Downloading(
                                         progressPercent = percent,
                                         downloadedMB = downloadedBytes / (1024L * 1024L),
-                                        totalMB = totalBytes / (1024L * 1024L)
+                                        totalMB = totalBytes / (1024L * 1024L),
+                                        speedMBps = speedMBps,
+                                        etaSeconds = etaSec
                                     )
                                 )
                             }
@@ -240,33 +291,52 @@ class ModelDownloadManager(
                     }
                 }
 
-                if (!hasValidGgufHeader(targetFile)) {
-                    targetFile.delete()
+                if (!hasValidGgufHeader(partFile)) {
+                    partFile.delete()
                     emit(DownloadProgress.Failed("الملف المُنزّل لا يحمل ترويسة GGUF صالحة — تم حذفه لحماية النظام."))
                     return@flow
                 }
 
-                val calculatedHash = ChecksumValidator.calculateSha256(targetFile)
+                val calculatedHash = ChecksumValidator.calculateSha256(partFile)
                 emit(DownloadProgress.VerifyingChecksum(calculatedHash))
 
                 if (model.expectedSha256.isNotBlank() &&
                     !calculatedHash.equals(model.expectedSha256.trim(), ignoreCase = true)
                 ) {
-                    targetFile.delete()
+                    partFile.delete()
                     emit(DownloadProgress.Failed("عدم تطابق البصمة الرقمية SHA-256 — تم إلغاء الملف التالف."))
                     return@flow
                 }
 
-                emit(DownloadProgress.Completed(targetFile, calculatedHash))
+                if (finalFile.exists()) finalFile.delete()
+                if (!partFile.renameTo(finalFile)) {
+                    partFile.copyTo(finalFile, overwrite = true)
+                    partFile.delete()
+                }
+                emit(DownloadProgress.Completed(finalFile, calculatedHash))
             } else {
                 emit(DownloadProgress.Failed("فشل الاتصال بخادم النماذج (رمز HTTP $responseCode)"))
             }
         } catch (ce: CancellationException) {
             throw ce
         } catch (_: Exception) {
-            emit(DownloadProgress.Failed("تعذر إتمام التنزيل: تحقق من اتصال الإنترنت أو المساحة التخزينية."))
+            emit(DownloadProgress.Failed("تعذر إتمام التنزيل: تحقق من اتصال الإنترنت أو المساحة التخزينية (يمكنك الاستكمال من نقطة التوقف)."))
         } finally {
             conn?.disconnect()
         }
     }.flowOn(Dispatchers.IO)
+
+    companion object {
+        fun formatSpeedAndEta(speedMBps: Double, etaSeconds: Long): String {
+            val speedText = if (speedMBps >= 0.05) {
+                String.format(Locale.US, "%.1f MB/s", speedMBps)
+            } else ""
+            val etaText = when {
+                etaSeconds <= 0L -> ""
+                etaSeconds < 60L -> "متبقي ${etaSeconds}ث"
+                else -> "متبقي ${etaSeconds / 60}د ${etaSeconds % 60}ث"
+            }
+            return listOf(speedText, etaText).filter { it.isNotBlank() }.joinToString(" • ")
+        }
+    }
 }

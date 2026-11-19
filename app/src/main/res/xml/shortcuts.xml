@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="shortcut_new_project"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_new_project_short"
+        android:shortcutLongLabel="@string/shortcut_new_project_long">
+        <intent
+            android:action="com.forgeprom.codestudio.SHORTCUT_NEW_PROJECT"
+            android:targetPackage="com.forgeprom.codestudio"
+            android:targetClass="com.forgeprom.codestudio.MainActivity" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="shortcut_studio"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_studio_short"
+        android:shortcutLongLabel="@string/shortcut_studio_long">
+        <intent
+            android:action="com.forgeprom.codestudio.SHORTCUT_STUDIO"
+            android:targetPackage="com.forgeprom.codestudio"
+            android:targetClass="com.forgeprom.codestudio.MainActivity" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="shortcut_security"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_security_short"
+        android:shortcutLongLabel="@string/shortcut_security_long">
+        <intent
+            android:action="com.forgeprom.codestudio.SHORTCUT_SECURITY"
+            android:targetPackage="com.forgeprom.codestudio"
+            android:targetClass="com.forgeprom.codestudio.MainActivity" />
+    </shortcut>
+</shortcuts>
