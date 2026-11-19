@@ -1,5 +1,7 @@
 package com.forgeprom.codestudio.presentation.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -41,6 +43,8 @@ import java.util.Locale
 @Composable
 fun StudioVisualControlBar(
     visualSettings: StudioVisualSettings,
+    isFocusMode: Boolean = false,
+    onToggleFocusMode: () -> Unit = {},
     onToggle3DDepth: () -> Unit,
     onToggleEyeComfort: () -> Unit,
     onToggleDarkTheme: () -> Unit,
@@ -56,6 +60,16 @@ fun StudioVisualControlBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        FilterChip(
+            selected = isFocusMode,
+            onClick = onToggleFocusMode,
+            label = { Text("وضع التركيز", fontSize = 11.sp, maxLines = 1, softWrap = false) },
+            leadingIcon = {
+                Icon(Icons.Default.CenterFocusStrong, contentDescription = "وضع التركيز", modifier = Modifier.size(15.dp))
+            },
+            modifier = Modifier.testTag("toggle_focus_mode_chip")
+        )
+
         FilterChip(
             selected = visualSettings.cardStyle == CardVisualStyle.EXTRUDED_3D,
             onClick = onToggle3DDepth,
@@ -252,15 +266,24 @@ fun HardwareTelemetryHud3D(
                     }
 
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            text = if (visual.is3DDepthEnabled) "لوحة العتاد التكيفية (3D HUD)"
-                            else "فاحص العتاد والأمان",
-                            fontWeight = FontWeight.Bold,
-                            color = visual.primaryText,
-                            fontSize = (12f + visual.fontDelta).sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (visual.is3DDepthEnabled) "لوحة العتاد التكيفية (3D HUD)"
+                                else "فاحص العتاد والأمان",
+                                fontWeight = FontWeight.Bold,
+                                color = visual.primaryText,
+                                fontSize = (12f + visual.fontDelta).sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            ContextualHelpIconButton(
+                                title = "لوحة مراقبة العتاد والأمان",
+                                explanation = "تعرض الذاكرة العشوائية المتاحة (RAM) لتحديد نماذج الذكاء الاصطناعي المحلية (GGUF) الآمنة للتشغيل دون بطء، بالإضافة إلى حالة الاتصال ومتوسط جودة مشاريعك.",
+                                testTag = "help_hud_button",
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
                         Text(
                             text = "الرام: $availableRamMB MB | $connectionType",
                             color = if (visual.isDarkTheme) accentSecondary else accentPrimary,
@@ -377,6 +400,11 @@ private fun KpiMetricPill(
 @Composable
 fun ProjectQualityRing(score: Int, modifier: Modifier = Modifier) {
     val visual = LocalStudioVisualSettings.current
+    val animatedProgress by animateFloatAsState(
+        targetValue = score.coerceIn(0, 100) / 100f,
+        animationSpec = tween(durationMillis = if (visual.performanceLiteMode) 0 else 650),
+        label = "quality_ring_progress"
+    )
     val ringColor = when {
         score >= 85 -> Color(0xFF10B981)
         score >= 65 -> if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary
@@ -395,7 +423,7 @@ fun ProjectQualityRing(score: Int, modifier: Modifier = Modifier) {
             drawArc(
                 color = ringColor,
                 startAngle = -90f,
-                sweepAngle = 360f * (score.coerceIn(0, 100) / 100f),
+                sweepAngle = 360f * animatedProgress,
                 useCenter = false,
                 style = Stroke(width = stroke, cap = StrokeCap.Round)
             )

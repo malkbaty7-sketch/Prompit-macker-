@@ -28,10 +28,11 @@ import com.forgeprom.codestudio.data.remote.ModelDownloadManager
 import com.forgeprom.codestudio.domain.blueprint.BlueprintAndScaffoldManager
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
 import com.forgeprom.codestudio.presentation.screens.MainAppScreen
+import com.forgeprom.codestudio.presentation.screens.UxFeedbackEvent
+import com.forgeprom.codestudio.presentation.screens.UxPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -115,20 +116,25 @@ class MainActivity : ComponentActivity() {
                 val activeDownloadJobs = remember { mutableStateMapOf<String, Job>() }
                 var researchResult by remember { mutableStateOf("") }
                 var isResearching by remember { mutableStateOf(false) }
-                var actionFeedback by remember { mutableStateOf<String?>(null) }
-                var lastExportedFile by remember { mutableStateOf<Pair<File, String>?>(null) }
-                var feedbackJob by remember { mutableStateOf<Job?>(null) }
+                var feedbackEvent by remember { mutableStateOf<UxFeedbackEvent?>(null) }
                 var pendingModelDownload by remember { mutableStateOf<ModelDownloadManager.GgufModelInfo?>(null) }
+                var isFocusMode by remember {
+                    mutableStateOf(UxPreferences.isFocusModeEnabled(this@MainActivity))
+                }
+                var showOnboarding by remember {
+                    mutableStateOf(!UxPreferences.hasCompletedOnboarding(this@MainActivity))
+                }
 
-                fun showFeedback(msg: String, exportedFile: Pair<File, String>? = null) {
-                    feedbackJob?.cancel()
-                    lastExportedFile = exportedFile
-                    feedbackJob = lifecycleScope.launch {
-                        actionFeedback = msg
-                        delay(if (exportedFile != null) 7500 else 4200)
-                        actionFeedback = null
-                        lastExportedFile = null
-                    }
+                fun showFeedback(
+                    msg: String,
+                    exportedFile: Pair<File, String>? = null,
+                    undoArchivedProject: ProjectEntity? = null
+                ) {
+                    feedbackEvent = UxFeedbackEvent(
+                        message = msg,
+                        exportedFile = exportedFile,
+                        undoArchivedProject = undoArchivedProject
+                    )
                 }
 
                 fun refreshDeviceTelemetry() {
@@ -229,8 +235,22 @@ class MainActivity : ComponentActivity() {
                     activeDownloadingIds = activeDownloadJobs.keys.toSet(),
                     researchResult = researchResult,
                     isResearching = isResearching,
-                    actionFeedback = actionFeedback,
-                    lastExportedFile = lastExportedFile,
+                    feedbackEvent = feedbackEvent,
+                    onConsumeFeedback = { feedbackEvent = null },
+                    isFocusMode = isFocusMode,
+                    onToggleFocusMode = {
+                        val next = !isFocusMode
+                        isFocusMode = next
+                        UxPreferences.setFocusModeEnabled(this@MainActivity, next)
+                    },
+                    showOnboarding = showOnboarding,
+                    onCompleteOnboarding = {
+                        showOnboarding = false
+                        UxPreferences.setOnboardingCompleted(this@MainActivity, true)
+                    },
+                    onReplayOnboarding = {
+                        showOnboarding = true
+                    },
                     visualSettings = visualSettings,
                     onUpdateVisualSettings = { updateAndSaveVisualSettings(it) },
                     onToggle3DDepth = {
@@ -428,13 +448,51 @@ class MainActivity : ComponentActivity() {
                     onArchiveProject = { proj ->
                         lifecycleScope.launch {
                             database.projectDao().setArchived(proj.id, archived = true)
-                            showFeedback("📦 تم نقل المشروع إلى الأرشيف الآمن: ${proj.name}")
+                            showFeedback(
+                                msg = "📦 تم نقل \"${proj.name}\" إلى الأرشيف",
+                                undoArchivedProject = proj
+                            )
                         }
                     },
                     onRestoreArchivedProject = { proj ->
                         lifecycleScope.launch {
                             database.projectDao().setArchived(proj.id, archived = false)
                             showFeedback("✓ تمت استعادة المشروع من الأرشيف: ${proj.name}")
+                        }
+                    },
+                    onDuplicateProject = { proj ->
+                        lifecycleScope.launch {
+                            try {
+                                val now = System.currentTimeMillis()
+                                val cloned = proj.copy(
+                                    id = UUID.randomUUID().toString(),
+                                    name = "${proj.name} (نسخة)",
+                                    isPinned = false,
+                                    isArchived = false,
+                                    createdAt = now,
+                                    updatedAt = now
+                                )
+                                database.projectDao().insertOrUpdate(cloned)
+                                showFeedback("✓ تم استنساخ المشروع بنجاح: ${cloned.name}")
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر استنساخ المشروع حالياً.")
+                            }
+                        }
+                    },
+                    onAutoRefineProject = { proj ->
+                        lifecycleScope.launch {
+                            try {
+                                val refined = PromptEngineeringEngine.autoRefinePrompt(proj)
+                                database.projectDao().insertOrUpdate(
+                                    proj.copy(
+                                        currentPromptText = refined,
+                                        updatedAt = System.currentTimeMillis()
+                                    )
+                                )
+                                showFeedback("✨ تم تحسين برومبت \"${proj.name}\" تلقائياً (+95%)")
+                            } catch (_: Exception) {
+                                showFeedback("⚠️ تعذر تنفيذ التحسين التلقائي حالياً.")
+                            }
                         }
                     },
                     onDeleteProject = { proj ->

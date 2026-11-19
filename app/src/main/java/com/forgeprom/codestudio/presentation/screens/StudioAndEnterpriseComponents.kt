@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -113,13 +115,26 @@ fun ChainedStudioWorkspace(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
                         Icon(Icons.Default.Verified, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
                         Text(
                             text = "مدقق جودة البرومبت (Prompt Linter)",
                             fontWeight = FontWeight.Bold,
                             color = visual.primaryText,
-                            fontSize = (13f + visual.fontDelta).sp
+                            fontSize = (13f + visual.fontDelta).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        ContextualHelpIconButton(
+                            title = "مدقق جودة البرومبت (Prompt Linter)",
+                            explanation = "يحلل هذا المدقق اكتمال مواصفات مشروعك من 100% عبر 4 محاور: المعمارية، الواجهة، الأمان، والحالات الحدية. كلما ارتفعت الدرجة أصبحت النتائج الهندسية أدق وأكثر جاهزية للتنفيذ.",
+                            testTag = "help_prompt_linter_button",
+                            modifier = Modifier.size(30.dp)
                         )
                     }
                     Surface(
@@ -136,8 +151,13 @@ fun ChainedStudioWorkspace(
                     }
                 }
 
+                val animatedQuality by animateFloatAsState(
+                    targetValue = qualityAudit.totalScore / 100f,
+                    animationSpec = tween(if (visual.performanceLiteMode) 0 else 500),
+                    label = "quality_progress_anim"
+                )
                 LinearProgressIndicator(
-                    progress = { qualityAudit.totalScore / 100f },
+                    progress = { animatedQuality },
                     color = if (qualityAudit.totalScore >= 85) Color(0xFF10B981) else visual.accentPrimary,
                     trackColor = visual.recessedBg,
                     modifier = Modifier.fillMaxWidth().height(7.dp)
@@ -510,13 +530,31 @@ fun EnterpriseSuiteSection(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(adaptive.adaptiveCardPadding(visual.contentPadding)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(Icons.Default.Savings, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
-                    Text(
-                        text = "حاسبة التوفير السحابي (FinOps Cloud vs Local GGUF)",
-                        fontWeight = FontWeight.Bold,
-                        color = visual.primaryText,
-                        fontSize = (13f + visual.fontDelta).sp
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Savings, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
+                        Text(
+                            text = "حاسبة التوفير السحابي (FinOps Cloud vs Local GGUF)",
+                            fontWeight = FontWeight.Bold,
+                            color = visual.primaryText,
+                            fontSize = (13f + visual.fontDelta).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    ContextualHelpIconButton(
+                        title = "حاسبة التوفير FinOps وعدد المستخدمين (MAU)",
+                        explanation = "تقارن هذه الحاسبة تكلفة تشغيل الذكاء الاصطناعي سحابياً بالكامل مقابل الوضع الهجين المحلي (GGUF) بناءً على عدد المستخدمين النشطين شهرياً (MAU) لتقدير الوفورات السنوية بدقة.",
+                        testTag = "help_finops_button",
+                        modifier = Modifier.size(30.dp)
                     )
                 }
 
@@ -621,13 +659,22 @@ fun EnterpriseSuiteSection(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
                         Icon(Icons.Default.Security, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
                         Text(
                             text = "التدقيق الأمني الذكي (OWASP Live Scanner)",
                             fontWeight = FontWeight.Bold,
                             color = visual.primaryText,
-                            fontSize = (13f + visual.fontDelta).sp
+                            fontSize = (13f + visual.fontDelta).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        ContextualHelpIconButton(
+                            title = "التدقيق الأمني (OWASP MASVS)",
+                            explanation = "يفحص مواصفات مشروعك تلقائياً للتأكد من وجود ضوابط التشفير المحلي (AES-256)، التحقق من الصلاحيات (BOLA)، سقف الطلبات (Rate Limiting)، وتشفير الاتصال (HTTPS).",
+                            testTag = "help_owasp_button",
+                            modifier = Modifier.size(30.dp)
                         )
                     }
                     Surface(
@@ -644,8 +691,13 @@ fun EnterpriseSuiteSection(
                     }
                 }
 
+                val animatedSecScore by animateFloatAsState(
+                    targetValue = securityScore / 100f,
+                    animationSpec = tween(if (visual.performanceLiteMode) 0 else 500),
+                    label = "security_progress_anim"
+                )
                 LinearProgressIndicator(
-                    progress = { securityScore / 100f },
+                    progress = { animatedSecScore },
                     color = if (securityScore >= 80) Color(0xFF10B981) else Color(0xFFF59E0B),
                     trackColor = visual.recessedBg,
                     modifier = Modifier.fillMaxWidth().height(7.dp)

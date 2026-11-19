@@ -5,15 +5,20 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -34,6 +39,7 @@ fun NewProjectDialog(
     onCreateProject: (String, String, String) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val haptic = LocalHapticFeedback.current
     var newProjectName by remember { mutableStateOf("") }
     var newProjectIdea by remember { mutableStateOf("") }
     var selectedPlatform by remember { mutableStateOf("ANDROID_KOTLIN") }
@@ -44,6 +50,20 @@ fun NewProjectDialog(
             "REACT_NATIVE" to "React Native",
             "WEB" to "Web App"
         )
+    }
+    val starterIdeas = remember {
+        listOf(
+            Triple("متجر إلكتروني", "متجر سوقي السريع", "تطبيق متجر إلكتروني محلي مع سلة مشتريات، فواتير PDF، تتبع طلبات، والعمل دون إنترنت مع مزامنة آمنة."),
+            Triple("حجز مواعيد", "منصة موعدي الذكية", "نظام حجز مواعيد للعيادات والخدمات مع تذكيرات محلية، تقويم عربي RTL، وإدارة ملفات العملاء بتشفير AES-256."),
+            Triple("إدارة مصاريف", "محفظتي للميزانية", "تطبيق تتبع مصاريف يومية وميزانية شخصية مع تقارير رسومية، تصنيف ذكي، ونسخ احتياطي محلي مشفّر."),
+            Triple("منصة تعليمية", "أكاديمية تعلّم", "تطبيق دورات تعليمية تفاعلية مع اختبارات قصيرة، تتبع التقدم، ومذاكرة دون اتصال بالإنترنت.")
+        )
+    }
+    val liveIdeaAudit = remember(newProjectIdea) {
+        PromptEngineeringEngine.evaluatePromptQuality(newProjectIdea)
+    }
+    val liveIdeaTokens = remember(newProjectIdea) {
+        estimatePromptTokens(newProjectIdea)
     }
 
     val speechRecognizerLauncher = rememberLauncherForActivityResult(
@@ -77,6 +97,34 @@ fun NewProjectDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState()).imePadding()
             ) {
+                Text(
+                    text = "بداية سريعة (انقر لاختيار فكرة جاهزة):",
+                    color = visual.secondaryText,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    starterIdeas.forEach { (chipLabel, sampleName, sampleIdea) ->
+                        AssistChip(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                newProjectName = sampleName
+                                newProjectIdea = sampleIdea
+                            },
+                            label = { Text(chipLabel, fontSize = 10.sp, maxLines = 1) },
+                            leadingIcon = {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp))
+                            },
+                            modifier = Modifier.testTag("starter_idea_chip_$chipLabel")
+                        )
+                    }
+                }
+
                 OutlinedTextField(
                     value = newProjectName,
                     onValueChange = { newProjectName = it },
@@ -91,6 +139,25 @@ fun NewProjectDialog(
                     minLines = 3,
                     modifier = Modifier.fillMaxWidth().testTag("new_project_idea_input")
                 )
+                if (newProjectIdea.isNotBlank()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "جودة الوصف: ${liveIdeaAudit.totalScore}%",
+                            color = if (liveIdeaAudit.totalScore >= 70) Color(0xFF10B981) else visual.accentSecondary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "~$liveIdeaTokens توكن • ${newProjectIdea.length} حرف",
+                            color = visual.secondaryText,
+                            fontSize = 10.sp
+                        )
+                    }
+                }
                 Text(
                     text = "المنصة المستهدفة:",
                     color = visual.secondaryText,
@@ -244,11 +311,25 @@ fun EditPromptDialog(
     onSavePrompt: (String) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val haptic = LocalHapticFeedback.current
     var draftText by remember(project.id) {
         mutableStateOf(project.currentPromptText ?: project.rawIdea)
     }
     val liveAudit = remember(draftText) {
         PromptEngineeringEngine.evaluatePromptQuality(draftText)
+    }
+    val liveTokens = remember(draftText) { estimatePromptTokens(draftText) }
+    val wordCount = remember(draftText) {
+        if (draftText.isBlank()) 0 else draftText.trim().split(Regex("\\s+")).size
+    }
+    val quickSnippets = remember {
+        listOf(
+            "+ معمارية Clean" to "\n- المعمارية: Clean Architecture + MVVM + Repository مع فصل الطبقات.",
+            "+ أمان OWASP" to "\n- الأمان: تشفير Android KeyStore AES-256-GCM وفرض HTTPS فقط وفق معايير OWASP.",
+            "+ شاشات UI/RTL" to "\n- الواجهة: تصميم Material 3 تكيفي بالكامل يدعم العربية (RTL) والوضع الليلي.",
+            "+ عمل Offline" to "\n- الحالات الحدية: العمل دون إنترنت 100% عبر Room SQLite ومنع أخطاء الذاكرة (OOM).",
+            "+ خطة الاختبار" to "\n- معايير القبول: اختبارات وحدة Robolectric وتغطية مسارات الاستخدام الأساسية."
+        )
     }
 
     AlertDialog(
@@ -268,19 +349,50 @@ fun EditPromptDialog(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "درجة الجودة الفورية: ${liveAudit.totalScore}/100",
+                        text = "الجودة الحية: ${liveAudit.totalScore}/100",
                         color = if (liveAudit.totalScore >= 85) Color(0xFF10B981) else visual.accentPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp
                     )
                     Text(
-                        text = "${draftText.length} حرف",
+                        text = "$wordCount كلمة • ~$liveTokens توكن",
                         color = visual.secondaryText,
-                        fontSize = 11.sp
+                        fontSize = 10.sp
                     )
+                }
+                LinearProgressIndicator(
+                    progress = { liveAudit.totalScore / 100f },
+                    color = if (liveAudit.totalScore >= 85) Color(0xFF10B981) else visual.accentPrimary,
+                    trackColor = visual.recessedBg,
+                    modifier = Modifier.fillMaxWidth().height(6.dp)
+                )
+                Text(
+                    text = "إدراج سريع لرفع الجودة:",
+                    color = visual.secondaryText,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickSnippets.forEach { (label, snippet) ->
+                        SuggestionChip(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                draftText = draftText.trimEnd() + snippet
+                            },
+                            label = { Text(label, fontSize = 10.sp, maxLines = 1) },
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("quick_insert_chip_$label")
+                        )
+                    }
                 }
                 OutlinedTextField(
                     value = draftText,
@@ -324,6 +436,7 @@ fun ProjectDetailPanelContent(
     project: ProjectEntity,
     onOpenInStudio: (ProjectEntity) -> Unit,
     onEditPrompt: (ProjectEntity) -> Unit,
+    onDuplicateProject: (ProjectEntity) -> Unit,
     onArchiveProject: (ProjectEntity) -> Unit,
     onShareProject: (ProjectEntity) -> Unit,
     onExportPdf: (ProjectEntity) -> Unit,
@@ -433,13 +546,28 @@ fun ProjectDetailPanelContent(
             }
         }
 
-        OutlinedButton(
-            onClick = { onArchiveProject(project) },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("archive_project_button")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Icon(Icons.Default.Archive, contentDescription = null, modifier = Modifier.size(15.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("نقل إلى الأرشيف الآمن (قابل للاستعادة)", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            OutlinedButton(
+                onClick = { onDuplicateProject(project) },
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("duplicate_project_button"),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.FileCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(5.dp))
+                Text("استنساخ المشروع", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(
+                onClick = { onArchiveProject(project) },
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("archive_project_button"),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.Archive, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(5.dp))
+                Text("نقل للأرشيف", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }

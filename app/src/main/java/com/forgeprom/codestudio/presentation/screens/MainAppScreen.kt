@@ -2,7 +2,16 @@ package com.forgeprom.codestudio.presentation.screens
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -19,7 +28,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -46,6 +57,12 @@ private data class NavDestinationItem(
     val testTag: String
 )
 
+private enum class ProjectSortMode(val labelAr: String) {
+    RECENT("الأحدث"),
+    QUALITY("الأعلى جودة"),
+    ALPHABETICAL("الأبجدية")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainAppScreen(
@@ -63,8 +80,13 @@ fun MainAppScreen(
     activeDownloadingIds: Set<String>,
     researchResult: String,
     isResearching: Boolean,
-    actionFeedback: String?,
-    lastExportedFile: Pair<File, String>?,
+    feedbackEvent: UxFeedbackEvent?,
+    onConsumeFeedback: () -> Unit,
+    isFocusMode: Boolean,
+    onToggleFocusMode: () -> Unit,
+    showOnboarding: Boolean,
+    onCompleteOnboarding: () -> Unit,
+    onReplayOnboarding: () -> Unit,
     visualSettings: StudioVisualSettings,
     onUpdateVisualSettings: (StudioVisualSettings) -> Unit,
     onToggle3DDepth: () -> Unit,
@@ -87,6 +109,8 @@ fun MainAppScreen(
     onTogglePinProject: (ProjectEntity) -> Unit,
     onArchiveProject: (ProjectEntity) -> Unit,
     onRestoreArchivedProject: (ProjectEntity) -> Unit,
+    onDuplicateProject: (ProjectEntity) -> Unit,
+    onAutoRefineProject: (ProjectEntity) -> Unit,
     onDeleteProject: (ProjectEntity) -> Unit,
     onAnalyzeWireframeUri: (ProjectEntity, Uri) -> Unit,
     onCopyText: (String, String, Boolean) -> Unit,
@@ -96,10 +120,14 @@ fun MainAppScreen(
     onSelectProject: (ProjectEntity) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val haptic = LocalHapticFeedback.current
+    val snackbarHostState = remember { SnackbarHostState() }
+
     var activeTab by remember { mutableIntStateOf(0) }
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var showServerDialog by remember { mutableStateOf(false) }
     var showAppearanceSheet by remember { mutableStateOf(false) }
+    var showCommandPalette by remember { mutableStateOf(false) }
     var selectedProjectForDialog by remember { mutableStateOf<ProjectEntity?>(null) }
     var activeStudioProject by remember { mutableStateOf<ProjectEntity?>(null) }
     var projectPendingDelete by remember { mutableStateOf<ProjectEntity?>(null) }
@@ -107,23 +135,53 @@ fun MainAppScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedPlatformFilter by remember { mutableStateOf("ALL") }
+    var sortMode by remember { mutableStateOf(ProjectSortMode.RECENT) }
     var researchQuery by remember { mutableStateOf("") }
+
+    // عرض إشعار Snackbar عائم ذكي مع زر تراجع أو مشاركة فورية دون تحريك عناصر الشاشة
+    LaunchedEffect(feedbackEvent?.id) {
+        val event = feedbackEvent ?: return@LaunchedEffect
+        val actionLabel = when {
+            event.undoArchivedProject != null -> "تراجع"
+            event.exportedFile != null -> "مشاركة"
+            else -> null
+        }
+        val duration = if (actionLabel != null) SnackbarDuration.Long else SnackbarDuration.Short
+        snackbarHostState.currentSnackbarData?.dismiss()
+        val result = snackbarHostState.showSnackbar(
+            message = event.message,
+            actionLabel = actionLabel,
+            withDismissAction = true,
+            duration = duration
+        )
+        if (result == SnackbarResult.ActionPerformed) {
+            event.undoArchivedProject?.let { onRestoreArchivedProject(it) }
+            event.exportedFile?.let { (file, mime) -> onShareExportedFile(file, mime) }
+        }
+        onConsumeFeedback()
+    }
 
     val isOnline = serverStatus?.isConnected == true && !networkState.isAirplaneMode
     val currentActiveProject = activeStudioProject?.let { sel ->
         projects.find { it.id == sel.id }
     } ?: projects.firstOrNull()
 
-    val averageQualityScore = remember(projects) {
-        if (projects.isEmpty()) 90
-        else projects.map {
-            PromptEngineeringEngine.evaluatePromptQuality(it.currentPromptText ?: it.rawIdea).totalScore
-        }.average().toInt()
+    val projectScoresMap = remember(projects, archivedProjects) {
+        (projects + archivedProjects).associate { proj ->
+            proj.id to PromptEngineeringEngine.evaluatePromptQuality(
+                proj.currentPromptText ?: proj.rawIdea
+            ).totalScore
+        }
     }
 
-    val filteredProjects = remember(projects, archivedProjects, searchQuery, selectedPlatformFilter) {
+    val averageQualityScore = remember(projects, projectScoresMap) {
+        if (projects.isEmpty()) 90
+        else projects.map { projectScoresMap[it.id] ?: 80 }.average().toInt()
+    }
+
+    val filteredProjects = remember(projects, archivedProjects, searchQuery, selectedPlatformFilter, sortMode, projectScoresMap) {
         val sourceList = if (selectedPlatformFilter == "ARCHIVED") archivedProjects else projects
-        sourceList.filter { proj ->
+        val filtered = sourceList.filter { proj ->
             val matchesQuery = searchQuery.isBlank() ||
                 proj.name.contains(searchQuery, ignoreCase = true) ||
                 proj.description.contains(searchQuery, ignoreCase = true)
@@ -133,6 +191,17 @@ fun MainAppScreen(
                 else -> proj.targetPlatform.equals(selectedPlatformFilter, ignoreCase = true)
             }
             matchesQuery && matchesFilter
+        }
+        when (sortMode) {
+            ProjectSortMode.RECENT -> filtered.sortedWith(
+                compareByDescending<ProjectEntity> { it.isPinned }.thenByDescending { it.updatedAt }
+            )
+            ProjectSortMode.QUALITY -> filtered.sortedWith(
+                compareByDescending<ProjectEntity> { it.isPinned }.thenByDescending { projectScoresMap[it.id] ?: 0 }
+            )
+            ProjectSortMode.ALPHABETICAL -> filtered.sortedWith(
+                compareByDescending<ProjectEntity> { it.isPinned }.thenBy { it.name.lowercase() }
+            )
         }
     }
 
@@ -157,6 +226,20 @@ fun MainAppScreen(
         CompositionLocalProvider(LocalAdaptiveScreenSpec provides adaptive) {
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.testTag("ux_snackbar_host")
+                ) { data ->
+                    Snackbar(
+                        snackbarData = data,
+                        containerColor = if (visual.isDarkTheme) Color(0xFF1E293B) else Color(0xFF0F172A),
+                        contentColor = Color.White,
+                        actionColor = visual.accentSecondary,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            },
             topBar = {
                 TopAppBar(
                     title = {
@@ -195,14 +278,42 @@ fun MainAppScreen(
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = visual.surfaceBg),
                     actions = {
                         IconButton(
-                            onClick = { showAppearanceSheet = true },
-                            modifier = Modifier.minimumInteractiveComponentSize().testTag("topbar_appearance_button")
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                showCommandPalette = true
+                            },
+                            modifier = Modifier.minimumInteractiveComponentSize().testTag("topbar_command_palette_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Palette,
-                                contentDescription = "تخصيص المظهر والشاشة",
-                                tint = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "البحث الشامل والأوامر السريعة",
+                                tint = visual.primaryText
                             )
+                        }
+                        IconButton(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onToggleFocusMode()
+                            },
+                            modifier = Modifier.minimumInteractiveComponentSize().testTag("topbar_focus_mode_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isFocusMode) Icons.Default.FullscreenExit else Icons.Default.CenterFocusStrong,
+                                contentDescription = if (isFocusMode) "إيقاف وضع التركيز" else "تفعيل وضع التركيز",
+                                tint = if (isFocusMode) visual.accentPrimary else visual.secondaryText
+                            )
+                        }
+                        if (!adaptive.isUltraCompact) {
+                            IconButton(
+                                onClick = { showAppearanceSheet = true },
+                                modifier = Modifier.minimumInteractiveComponentSize().testTag("topbar_appearance_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Palette,
+                                    contentDescription = "تخصيص المظهر والشاشة",
+                                    tint = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary
+                                )
+                            }
                         }
                         Surface(
                             onClick = { showServerDialog = true },
@@ -247,7 +358,12 @@ fun MainAppScreen(
                         navItems.forEach { item ->
                             NavigationBarItem(
                                 selected = activeTab == item.index,
-                                onClick = { activeTab = item.index },
+                                onClick = {
+                                    if (activeTab != item.index) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        activeTab = item.index
+                                    }
+                                },
                                 icon = { Icon(item.icon, contentDescription = item.label) },
                                 label = {
                                     Text(
@@ -266,14 +382,91 @@ fun MainAppScreen(
                 }
             },
             floatingActionButton = {
-                if (activeTab == 0) {
-                    FloatingActionButton(
-                        onClick = { showNewProjectDialog = true },
-                        containerColor = visual.accentPrimary,
-                        contentColor = Color.White,
-                        modifier = Modifier.testTag("new_project_fab")
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = "مشروع جديد")
+                // 7. زر إجراء عائم سياقي يتكيف مع التبويب النشط وحجم الشاشة
+                val useCompactFab = adaptive.isUltraCompact || adaptive.isShortLandscape
+                when (activeTab) {
+                    0 -> {
+                        if (useCompactFab) {
+                            FloatingActionButton(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    showNewProjectDialog = true
+                                },
+                                containerColor = visual.accentPrimary,
+                                contentColor = Color.White,
+                                modifier = Modifier.testTag("new_project_fab")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "مشروع جديد")
+                            }
+                        } else {
+                            ExtendedFloatingActionButton(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    showNewProjectDialog = true
+                                },
+                                containerColor = visual.accentPrimary,
+                                contentColor = Color.White,
+                                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                                text = { Text("مشروع جديد", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
+                                modifier = Modifier.testTag("new_project_fab")
+                            )
+                        }
+                    }
+                    1 -> {
+                        currentActiveProject?.let { proj ->
+                            if (useCompactFab) {
+                                FloatingActionButton(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onAutoRefineProject(proj)
+                                    },
+                                    containerColor = visual.accentPrimary,
+                                    contentColor = Color.White,
+                                    modifier = Modifier.testTag("studio_quick_refine_fab")
+                                ) {
+                                    Icon(Icons.Default.AutoFixHigh, contentDescription = "تحسين تلقائي سريع")
+                                }
+                            } else {
+                                ExtendedFloatingActionButton(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onAutoRefineProject(proj)
+                                    },
+                                    containerColor = visual.accentPrimary,
+                                    contentColor = Color.White,
+                                    icon = { Icon(Icons.Default.AutoFixHigh, contentDescription = null) },
+                                    text = { Text("تحسين ذكي", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
+                                    modifier = Modifier.testTag("studio_quick_refine_fab")
+                                )
+                            }
+                        }
+                    }
+                    3 -> {
+                        if (useCompactFab) {
+                            FloatingActionButton(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onBackupAllProjects()
+                                },
+                                containerColor = visual.accentPrimary,
+                                contentColor = Color.White,
+                                modifier = Modifier.testTag("security_quick_backup_fab")
+                            ) {
+                                Icon(Icons.Default.Backup, contentDescription = "نسخة احتياطية مشفّرة")
+                            }
+                        } else {
+                            ExtendedFloatingActionButton(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onBackupAllProjects()
+                                },
+                                containerColor = visual.accentPrimary,
+                                contentColor = Color.White,
+                                icon = { Icon(Icons.Default.Backup, contentDescription = null) },
+                                text = { Text("نسخة مشفّرة", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
+                                modifier = Modifier.testTag("security_quick_backup_fab")
+                            )
+                        }
                     }
                 }
             },
@@ -325,59 +518,44 @@ fun MainAppScreen(
                         .widthIn(max = adaptive.maxContentWidth)
                         .padding(horizontal = adaptive.horizontalOuterPadding, vertical = if (adaptive.isShortLandscape) 4.dp else 8.dp)
                 ) {
-                    if (!actionFeedback.isNullOrBlank()) {
-                        Surface(
-                            color = visual.accentPrimary.copy(alpha = 0.22f),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = actionFeedback,
-                                    color = visual.primaryText,
-                                    fontSize = (11f + visual.fontDelta).sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                lastExportedFile?.let { (file, mime) ->
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    FilledTonalButton(
-                                        onClick = { onShareExportedFile(file, mime) },
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        modifier = Modifier.heightIn(min = 34.dp).testTag("share_exported_file_button")
-                                    ) {
-                                        Icon(Icons.Default.Share, contentDescription = "مشاركة الملف المُصدّر", modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("مشاركة الملف", fontSize = 10.sp)
-                                    }
-                                }
-                            }
+                    // 1. وضع التركيز (Focus Mode) يطوي شريط المظهر ولوحة العتاد بنعومة لتوسيع مساحة العمل
+                    AnimatedVisibility(
+                        visible = !isFocusMode,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        Column {
+                            StudioVisualControlBar(
+                                visualSettings = visualSettings,
+                                isFocusMode = isFocusMode,
+                                onToggleFocusMode = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onToggleFocusMode()
+                                },
+                                onToggle3DDepth = onToggle3DDepth,
+                                onToggleEyeComfort = onToggleEyeComfort,
+                                onToggleDarkTheme = onToggleDarkTheme,
+                                onOpenAppearanceStudio = { showAppearanceSheet = true }
+                            )
+
+                            HardwareTelemetryHud3D(
+                                availableRamMB = availableRamMB,
+                                connectionType = networkState.connectionType,
+                                projectsCount = projects.size,
+                                averageQualityScore = averageQualityScore,
+                                isWideScreen = isWideScreen,
+                                onCheckServer = onCheckServer
+                            )
                         }
                     }
 
-                    StudioVisualControlBar(
-                        visualSettings = visualSettings,
-                        onToggle3DDepth = onToggle3DDepth,
-                        onToggleEyeComfort = onToggleEyeComfort,
-                        onToggleDarkTheme = onToggleDarkTheme,
-                        onOpenAppearanceStudio = { showAppearanceSheet = true }
-                    )
-
-                    HardwareTelemetryHud3D(
-                        availableRamMB = availableRamMB,
-                        connectionType = networkState.connectionType,
-                        projectsCount = projects.size,
-                        averageQualityScore = averageQualityScore,
-                        isWideScreen = isWideScreen,
-                        onCheckServer = onCheckServer
-                    )
-
-                    when (activeTab) {
+                    AnimatedContent(
+                        targetState = activeTab,
+                        transitionSpec = { fadeIn() togetherWith fadeOut() },
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        label = "main_tab_transition"
+                    ) { currentTab ->
+                    when (currentTab) {
                         0 -> {
                             val projectsListPane: @Composable (Modifier) -> Unit = { paneModifier ->
                                 Column(modifier = paneModifier) {
@@ -400,7 +578,7 @@ fun MainAppScreen(
 
                                     LazyRow(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
                                     ) {
                                         val filters = listOf(
                                             "ALL" to "الكل (${projects.size})",
@@ -416,6 +594,34 @@ fun MainAppScreen(
                                                 selected = selectedPlatformFilter == key,
                                                 onClick = { selectedPlatformFilter = key },
                                                 label = { Text(label, fontSize = 10.sp) }
+                                            )
+                                        }
+                                    }
+
+                                    // 6. شريط الفرز الذكي وتلميح السحب السريع
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState())
+                                            .padding(bottom = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Sort,
+                                            contentDescription = "فرز المشاريع",
+                                            tint = visual.secondaryText,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        ProjectSortMode.entries.forEach { mode ->
+                                            FilterChip(
+                                                selected = sortMode == mode,
+                                                onClick = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    sortMode = mode
+                                                },
+                                                label = { Text(mode.labelAr, fontSize = 10.sp, maxLines = 1) },
+                                                modifier = Modifier.testTag("sort_mode_${mode.name}")
                                             )
                                         }
                                     }
@@ -471,14 +677,88 @@ fun MainAppScreen(
                                     } else {
                                     LazyColumn(
                                         verticalArrangement = Arrangement.spacedBy(visual.itemSpacing),
+                                        contentPadding = PaddingValues(bottom = 84.dp),
                                         modifier = Modifier.fillMaxSize().testTag("projects_list")
                                     ) {
                                         items(filteredProjects, key = { it.id }) { project ->
-                                            val score = remember(project.currentPromptText, project.rawIdea) {
-                                                PromptEngineeringEngine.evaluatePromptQuality(
-                                                    project.currentPromptText ?: project.rawIdea
-                                                ).totalScore
-                                            }
+                                            val score = projectScoresMap[project.id] ?: 80
+                                            val isArchivedView = selectedPlatformFilter == "ARCHIVED"
+                                            val dismissState = rememberSwipeToDismissBoxState(
+                                                confirmValueChange = { swipeValue ->
+                                                    when (swipeValue) {
+                                                        SwipeToDismissBoxValue.StartToEnd -> {
+                                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                            if (isArchivedView) {
+                                                                onRestoreArchivedProject(project)
+                                                            } else {
+                                                                onTogglePinProject(project)
+                                                            }
+                                                            false
+                                                        }
+                                                        SwipeToDismissBoxValue.EndToStart -> {
+                                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                            if (isArchivedView) {
+                                                                projectPendingDelete = project
+                                                            } else {
+                                                                onArchiveProject(project)
+                                                            }
+                                                            false
+                                                        }
+                                                        SwipeToDismissBoxValue.Settled -> false
+                                                    }
+                                                }
+                                            )
+
+                                            SwipeToDismissBox(
+                                                state = dismissState,
+                                                backgroundContent = {
+                                                    val direction = dismissState.dismissDirection
+                                                    val bgColor = when (direction) {
+                                                        SwipeToDismissBoxValue.StartToEnd ->
+                                                            if (isArchivedView) Color(0xFF065F46) else Color(0xFFB45309)
+                                                        SwipeToDismissBoxValue.EndToStart ->
+                                                            if (isArchivedView) Color(0xFF991B1B) else Color(0xFF1E3A8A)
+                                                        else -> Color.Transparent
+                                                    }
+                                                    val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) {
+                                                        Alignment.CenterStart
+                                                    } else {
+                                                        Alignment.CenterEnd
+                                                    }
+                                                    val swipeLabel = when (direction) {
+                                                        SwipeToDismissBoxValue.StartToEnd ->
+                                                            if (isArchivedView) "استعادة" else if (project.isPinned) "إلغاء التثبيت" else "تثبيت ⭐"
+                                                        SwipeToDismissBoxValue.EndToStart ->
+                                                            if (isArchivedView) "حذف نهائي" else "أرشفة آمنة"
+                                                        else -> ""
+                                                    }
+                                                    val swipeIcon = when (direction) {
+                                                        SwipeToDismissBoxValue.StartToEnd ->
+                                                            if (isArchivedView) Icons.Default.Unarchive else Icons.Default.Star
+                                                        SwipeToDismissBoxValue.EndToStart ->
+                                                            if (isArchivedView) Icons.Default.DeleteForever else Icons.Default.Archive
+                                                        else -> Icons.Default.Archive
+                                                    }
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .clip(RoundedCornerShape(14.dp))
+                                                            .background(bgColor)
+                                                            .padding(horizontal = 18.dp),
+                                                        contentAlignment = alignment
+                                                    ) {
+                                                        if (swipeLabel.isNotEmpty()) {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                Icon(swipeIcon, contentDescription = swipeLabel, tint = Color.White, modifier = Modifier.size(20.dp))
+                                                                Text(swipeLabel, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            ) {
                                             Card(
                                                 onClick = {
                                                     activeStudioProject = project
@@ -491,7 +771,7 @@ fun MainAppScreen(
                                                 elevation = CardDefaults.cardElevation(defaultElevation = visual.cardElevation),
                                                 border = visual.cardBorder,
                                                 shape = RoundedCornerShape(14.dp),
-                                                modifier = Modifier.fillMaxWidth()
+                                                modifier = Modifier.fillMaxWidth().testTag("project_card_${project.id}")
                                             ) {
                                                 Column(modifier = Modifier.padding(visual.contentPadding)) {
                                                     Row(
@@ -510,27 +790,43 @@ fun MainAppScreen(
                                                                     text = project.name,
                                                                     fontWeight = FontWeight.Bold,
                                                                     color = visual.primaryText,
-                                                                    fontSize = (13f + visual.fontDelta).sp
+                                                                    fontSize = (13f + visual.fontDelta).sp,
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis
                                                                 )
-                                                                Surface(
-                                                                    color = visual.accentPrimary.copy(alpha = 0.2f),
-                                                                    shape = RoundedCornerShape(6.dp),
+                                                                Row(
+                                                                    verticalAlignment = Alignment.CenterVertically,
+                                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                                                                     modifier = Modifier.padding(top = 3.dp)
                                                                 ) {
+                                                                    Surface(
+                                                                        color = visual.accentPrimary.copy(alpha = 0.2f),
+                                                                        shape = RoundedCornerShape(6.dp)
+                                                                    ) {
+                                                                        Text(
+                                                                            text = project.targetPlatform,
+                                                                            color = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
+                                                                            fontSize = 9.sp,
+                                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                                        )
+                                                                    }
                                                                     Text(
-                                                                        text = project.targetPlatform,
-                                                                        color = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
+                                                                        text = formatRelativeTimeAr(project.updatedAt),
+                                                                        color = visual.secondaryText,
                                                                         fontSize = 9.sp,
-                                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                                        maxLines = 1
                                                                     )
                                                                 }
                                                             }
                                                         }
 
                                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            if (selectedPlatformFilter == "ARCHIVED") {
+                                                            if (isArchivedView) {
                                                                 IconButton(
-                                                                    onClick = { onRestoreArchivedProject(project) },
+                                                                    onClick = {
+                                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                        onRestoreArchivedProject(project)
+                                                                    },
                                                                     modifier = Modifier.minimumInteractiveComponentSize().testTag("restore_project_btn_${project.id}")
                                                                 ) {
                                                                     Icon(
@@ -542,7 +838,10 @@ fun MainAppScreen(
                                                                 }
                                                             } else {
                                                                 IconButton(
-                                                                    onClick = { onTogglePinProject(project) },
+                                                                    onClick = {
+                                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                        onTogglePinProject(project)
+                                                                    },
                                                                     modifier = Modifier.minimumInteractiveComponentSize()
                                                                 ) {
                                                                     Icon(
@@ -550,19 +849,6 @@ fun MainAppScreen(
                                                                         contentDescription = "تثبيت المشروع",
                                                                         tint = if (project.isPinned) Color(0xFFFBBF24) else visual.secondaryText,
                                                                         modifier = Modifier.size(20.dp)
-                                                                    )
-                                                                }
-                                                                IconButton(
-                                                                    onClick = {
-                                                                        onCopyText(project.name, project.currentPromptText ?: project.rawIdea, false)
-                                                                    },
-                                                                    modifier = Modifier.minimumInteractiveComponentSize()
-                                                                ) {
-                                                                    Icon(
-                                                                        imageVector = Icons.Default.ContentCopy,
-                                                                        contentDescription = "نسخ البرومبت",
-                                                                        tint = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
-                                                                        modifier = Modifier.size(18.dp)
                                                                     )
                                                                 }
                                                             }
@@ -584,9 +870,55 @@ fun MainAppScreen(
                                                         text = project.description,
                                                         color = visual.secondaryText,
                                                         fontSize = (11f + visual.fontDelta).sp,
-                                                        maxLines = 2
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
                                                     )
+                                                    if (!isArchivedView) {
+                                                        Spacer(modifier = Modifier.height(8.dp))
+                                                        // شريط إجراءات سريعة مباشرة بلمسة واحدة
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .horizontalScroll(rememberScrollState()),
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            AssistChip(
+                                                                onClick = {
+                                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                    activeStudioProject = project
+                                                                    activeTab = 1
+                                                                },
+                                                                label = { Text("الاستوديو", fontSize = 10.sp, maxLines = 1) },
+                                                                leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                                            )
+                                                            AssistChip(
+                                                                onClick = {
+                                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                    onCopyText(project.name, project.currentPromptText ?: project.rawIdea, false)
+                                                                },
+                                                                label = { Text("نسخ", fontSize = 10.sp, maxLines = 1) },
+                                                                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                                            )
+                                                            AssistChip(
+                                                                onClick = {
+                                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                    onDuplicateProject(project)
+                                                                },
+                                                                label = { Text("استنساخ", fontSize = 10.sp, maxLines = 1) },
+                                                                leadingIcon = { Icon(Icons.Default.FileCopy, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                                            )
+                                                            AssistChip(
+                                                                onClick = {
+                                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                                    onExportPdf(project)
+                                                                },
+                                                                label = { Text("PDF", fontSize = 10.sp, maxLines = 1) },
+                                                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                                            )
+                                                        }
+                                                    }
                                                 }
+                                            }
                                             }
                                         }
                                     }
@@ -622,6 +954,7 @@ fun MainAppScreen(
                                                         activeTab = 1
                                                     },
                                                     onEditPrompt = { projectToEditPrompt = it },
+                                                    onDuplicateProject = onDuplicateProject,
                                                     onArchiveProject = onArchiveProject,
                                                     onShareProject = onShareProject,
                                                     onExportPdf = onExportPdf,
@@ -758,13 +1091,25 @@ fun MainAppScreen(
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 item {
-                                    Text(
-                                        text = "مركز النماذج المحلية (GGUF Q4_K_M)",
-                                        fontWeight = FontWeight.Bold,
-                                        color = visual.primaryText,
-                                        fontSize = (15f + visual.fontDelta).sp,
-                                        modifier = Modifier.padding(bottom = 4.dp)
-                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "مركز النماذج المحلية (GGUF Q4_K_M)",
+                                            fontWeight = FontWeight.Bold,
+                                            color = visual.primaryText,
+                                            fontSize = (15f + visual.fontDelta).sp,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        ContextualHelpIconButton(
+                                            title = "ما هي نماذج GGUF Q4_K_M ومتطلبات RAM؟",
+                                            explanation = "ملفات GGUF هي نماذج ذكاء اصطناعي مضغوطة بتقنية 4-bit لتعمل مباشرة على هاتفك دون إنترنت وبخصوصية تامة. يفحص التطبيق ذاكرة RAM المتاحة تلقائياً لمنع تنزيل نموذج أثقل من قدرات جهازك.",
+                                            testTag = "help_gguf_models_button",
+                                            modifier = Modifier.size(32.dp)
+                                        )
+                                    }
                                 }
                                 items(chunkedModels) { rowModels ->
                                     Row(
@@ -924,9 +1269,42 @@ fun MainAppScreen(
                             }
                         }
                     }
+                    }
                 }
                 }
             }
+        }
+
+        if (showOnboarding) {
+            FirstLaunchOnboardingDialog(
+                onComplete = onCompleteOnboarding,
+                onCreateFirstProject = { showNewProjectDialog = true }
+            )
+        }
+
+        if (showCommandPalette) {
+            GlobalCommandPaletteDialog(
+                projects = projects,
+                blueprints = blueprints,
+                models = models,
+                isFocusMode = isFocusMode,
+                onDismiss = { showCommandPalette = false },
+                onSelectProject = { proj ->
+                    activeStudioProject = proj
+                    activeTab = 1
+                },
+                onUseBlueprint = { bp ->
+                    onUseBlueprint(bp)
+                    activeTab = 0
+                },
+                onJumpToModels = { activeTab = 4 },
+                onNewProject = { showNewProjectDialog = true },
+                onOpenAppearance = { showAppearanceSheet = true },
+                onToggleFocusMode = onToggleFocusMode,
+                onRunBackup = onBackupAllProjects,
+                onCheckServer = onCheckServer,
+                onReplayOnboarding = onReplayOnboarding
+            )
         }
 
         if (showNewProjectDialog) {
@@ -969,6 +1347,10 @@ fun MainAppScreen(
                             onEditPrompt = {
                                 selectedProjectForDialog = null
                                 projectToEditPrompt = it
+                            },
+                            onDuplicateProject = {
+                                selectedProjectForDialog = null
+                                onDuplicateProject(it)
                             },
                             onArchiveProject = {
                                 selectedProjectForDialog = null
