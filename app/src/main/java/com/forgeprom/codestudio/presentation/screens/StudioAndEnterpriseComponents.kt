@@ -4,10 +4,12 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -18,9 +20,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.forgeprom.codestudio.core.security.VaultAndEnterpriseManager
+import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
@@ -43,6 +47,8 @@ fun ChainedStudioWorkspace(
     onExportMarkdown: (ProjectEntity, String) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val adaptive = LocalAdaptiveScreenSpec.current
+    val cardPad = adaptive.adaptiveCardPadding(visual.contentPadding)
     val activeProject = selectedProject ?: projects.firstOrNull()
     if (activeProject == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -143,27 +149,54 @@ fun ChainedStudioWorkspace(
                     fontSize = (11f + visual.fontDelta).sp
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    qualityAudit.metrics.forEach { metric ->
-                        Surface(
-                            color = visual.recessedBg,
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                if (adaptive.isUltraCompact || adaptive.isHighFontScale) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        qualityAudit.metrics.chunked(2).forEach { pair ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text(text = metric.name, color = visual.secondaryText, fontSize = 9.sp, maxLines = 1)
-                                Text(
-                                    text = "${metric.score}/${metric.maxScore}",
-                                    color = visual.primaryText,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                )
+                                pair.forEach { metric ->
+                                    Surface(
+                                        color = visual.recessedBg,
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(6.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(text = metric.name, color = visual.secondaryText, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(text = "${metric.score}/${metric.maxScore}", color = visual.primaryText, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        qualityAudit.metrics.forEach { metric ->
+                            Surface(
+                                color = visual.recessedBg,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(text = metric.name, color = visual.secondaryText, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        text = "${metric.score}/${metric.maxScore}",
+                                        color = visual.primaryText,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -177,33 +210,62 @@ fun ChainedStudioWorkspace(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Button(
-                        onClick = {
-                            val refined = PromptEngineeringEngine.autoRefinePrompt(activeProject)
-                            onUpdateProjectPrompt(activeProject, refined, "✓ تم تحسين البرومبت تلقائياً ورفع معايير الجودة (+95%)")
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                        modifier = Modifier.weight(1f).heightIn(min = 42.dp).testTag("auto_refine_button"),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("تحسين تلقائي (Auto-Refine)", fontSize = 11.sp)
+                if (adaptive.isUltraCompact || adaptive.isHighFontScale) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                val refined = PromptEngineeringEngine.autoRefinePrompt(activeProject)
+                                onUpdateProjectPrompt(activeProject, refined, "✓ تم تحسين البرومبت تلقائياً ورفع معايير الجودة (+95%)")
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).testTag("auto_refine_button")
+                        ) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("تحسين تلقائي (Auto-Refine)", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).testTag("vision_wireframe_button")
+                        ) {
+                            Icon(Icons.Default.ImageSearch, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("تحليل مخطط بصري", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                val refined = PromptEngineeringEngine.autoRefinePrompt(activeProject)
+                                onUpdateProjectPrompt(activeProject, refined, "✓ تم تحسين البرومبت تلقائياً ورفع معايير الجودة (+95%)")
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                            modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("auto_refine_button"),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تحسين تلقائي", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
 
-                    OutlinedButton(
-                        onClick = {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        modifier = Modifier.weight(1f).heightIn(min = 42.dp).testTag("vision_wireframe_button"),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Icon(Icons.Default.ImageSearch, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("تحليل مخطط بصري", fontSize = 11.sp)
+                        OutlinedButton(
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("vision_wireframe_button"),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.ImageSearch, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تحليل مخطط بصري", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
 
@@ -270,45 +332,88 @@ fun ChainedStudioWorkspace(
                     onCopy = { onCopyText(stages[selectedStage], stageContent, false) }
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            onUpdateProjectPrompt(
-                                activeProject,
-                                pipeline.combinedMarkdown,
-                                "✓ تم اعتماد ودمج السلسلة الهندسية الكاملة (4 مراحل) في المشروع"
-                            )
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                        modifier = Modifier.weight(1.2f).heightIn(min = 42.dp).testTag("apply_chained_prd_button"),
-                        contentPadding = PaddingValues(8.dp)
-                    ) {
-                        Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("اعتماد السلسلة الكاملة", fontSize = 10.sp)
+                if (adaptive.isCompactPhone || adaptive.isHighFontScale) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                onUpdateProjectPrompt(
+                                    activeProject,
+                                    pipeline.combinedMarkdown,
+                                    "✓ تم اعتماد ودمج السلسلة الهندسية الكاملة (4 مراحل) في المشروع"
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).testTag("apply_chained_prd_button")
+                        ) {
+                            Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("اعتماد السلسلة الهندسية الكاملة (4 مراحل)", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { onCopyText("مرحلة هندسية", stageContent, false) },
+                                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                                contentPadding = PaddingValues(8.dp)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("نسخ المرحلة", fontSize = 11.sp, maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = { onExportMarkdown(activeProject, pipeline.combinedMarkdown) },
+                                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                                contentPadding = PaddingValues(8.dp)
+                            ) {
+                                Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("تصدير .MD", fontSize = 11.sp, maxLines = 1)
+                            }
+                        }
                     }
-
-                    OutlinedButton(
-                        onClick = { onCopyText("مرحلة هندسية", stageContent, false) },
-                        modifier = Modifier.weight(0.9f).heightIn(min = 42.dp),
-                        contentPadding = PaddingValues(8.dp)
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("نسخ المرحلة", fontSize = 10.sp)
-                    }
+                        Button(
+                            onClick = {
+                                onUpdateProjectPrompt(
+                                    activeProject,
+                                    pipeline.combinedMarkdown,
+                                    "✓ تم اعتماد ودمج السلسلة الهندسية الكاملة (4 مراحل) في المشروع"
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                            modifier = Modifier.weight(1.2f).heightIn(min = 44.dp).testTag("apply_chained_prd_button"),
+                            contentPadding = PaddingValues(8.dp)
+                        ) {
+                            Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("اعتماد السلسلة الكاملة", fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
 
-                    OutlinedButton(
-                        onClick = { onExportMarkdown(activeProject, pipeline.combinedMarkdown) },
-                        modifier = Modifier.weight(0.9f).heightIn(min = 42.dp),
-                        contentPadding = PaddingValues(8.dp)
-                    ) {
-                        Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("تصدير .MD", fontSize = 10.sp)
+                        OutlinedButton(
+                            onClick = { onCopyText("مرحلة هندسية", stageContent, false) },
+                            modifier = Modifier.weight(0.9f).heightIn(min = 44.dp),
+                            contentPadding = PaddingValues(8.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("نسخ المرحلة", fontSize = 10.sp, maxLines = 1)
+                        }
+
+                        OutlinedButton(
+                            onClick = { onExportMarkdown(activeProject, pipeline.combinedMarkdown) },
+                            modifier = Modifier.weight(0.9f).heightIn(min = 44.dp),
+                            contentPadding = PaddingValues(8.dp)
+                        ) {
+                            Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تصدير .MD", fontSize = 10.sp, maxLines = 1)
+                        }
                     }
                 }
             }
@@ -376,6 +481,7 @@ fun EnterpriseSuiteSection(
     onRestoreBackupProjects: () -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val adaptive = LocalAdaptiveScreenSpec.current
     var selectedMau by remember { mutableIntStateOf(10000) }
     var vaultInputText by remember { mutableStateOf("") }
     var vaultOutputText by remember { mutableStateOf("") }
@@ -403,7 +509,7 @@ fun EnterpriseSuiteSection(
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(visual.contentPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.padding(adaptive.adaptiveCardPadding(visual.contentPadding)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Icon(Icons.Default.Savings, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
                     Text(
@@ -420,49 +526,80 @@ fun EnterpriseSuiteSection(
                     fontSize = (11f + visual.fontDelta).sp
                 )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                ) {
                     listOf(1000, 10000, 50000, 100000).forEach { mauOption ->
                         FilterChip(
                             selected = selectedMau == mauOption,
                             onClick = { selectedMau = mauOption },
-                            label = { Text("${mauOption / 1000}K", fontSize = 11.sp) },
-                            modifier = Modifier.weight(1f)
+                            label = { Text("${mauOption / 1000}K", fontSize = 11.sp, maxLines = 1) }
                         )
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Surface(
-                        color = visual.recessedBg,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            Text("سحابي بالكامل/شهر", color = visual.secondaryText, fontSize = 10.sp)
-                            Text("$${finOps.cloudMonthlyUsd}", color = Color(0xFFEF4444), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                if (adaptive.isUltraCompact || adaptive.isHighFontScale) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            Surface(color = visual.recessedBg, shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f)) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text("سحابي/شهر", color = visual.secondaryText, fontSize = 10.sp, maxLines = 1)
+                                    Text("$${finOps.cloudMonthlyUsd}", color = Color(0xFFEF4444), fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                                }
+                            }
+                            Surface(color = visual.recessedBg, shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f)) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text("هجين/شهر", color = visual.secondaryText, fontSize = 10.sp, maxLines = 1)
+                                    Text("$${finOps.hybridGgufMonthlyUsd}", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                                }
+                            }
+                        }
+                        Surface(color = Color(0xFF065F46).copy(alpha = 0.25f), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("الوفورات السنوية المقدرة", color = Color(0xFF10B981), fontSize = 11.sp)
+                                Text("$${finOps.annualSavingsUsd}", color = visual.primaryText, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
                         }
                     }
-                    Surface(
-                        color = visual.recessedBg,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f)
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            Text("هجين GGUF/شهر", color = visual.secondaryText, fontSize = 10.sp)
-                            Text("$${finOps.hybridGgufMonthlyUsd}", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Surface(
+                            color = visual.recessedBg,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("سحابي بالكامل/شهر", color = visual.secondaryText, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("$${finOps.cloudMonthlyUsd}", color = Color(0xFFEF4444), fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                            }
                         }
-                    }
-                    Surface(
-                        color = Color(0xFF065F46).copy(alpha = 0.25f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1.1f)
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            Text("الوفورات السنوية", color = Color(0xFF10B981), fontSize = 10.sp)
-                            Text("$${finOps.annualSavingsUsd}", color = visual.primaryText, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Surface(
+                            color = visual.recessedBg,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("هجين GGUF/شهر", color = visual.secondaryText, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("$${finOps.hybridGgufMonthlyUsd}", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                            }
+                        }
+                        Surface(
+                            color = Color(0xFF065F46).copy(alpha = 0.25f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1.1f)
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("الوفورات السنوية", color = Color(0xFF10B981), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("$${finOps.annualSavingsUsd}", color = visual.primaryText, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                            }
                         }
                     }
                 }

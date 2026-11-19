@@ -23,12 +23,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.forgeprom.codestudio.R
 import com.forgeprom.codestudio.core.network.NetworkMonitor
+import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.core.ui.StudioVisualSettings
+import com.forgeprom.codestudio.core.ui.rememberAdaptiveScreenSpec
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.data.remote.CloudApiService
 import com.forgeprom.codestudio.data.remote.ModelDownloadManager
@@ -136,10 +139,10 @@ fun MainAppScreen(
     val navItems = remember {
         listOf(
             NavDestinationItem(0, "المشاريع", Icons.Default.FolderOpen, "nav_projects"),
-            NavDestinationItem(1, "السلسلة والجودة", Icons.Default.AccountTree, "nav_studio"),
+            NavDestinationItem(1, "الاستوديو", Icons.Default.AccountTree, "nav_studio"),
             NavDestinationItem(2, "القوالب", Icons.Default.AutoAwesomeMosaic, "nav_blueprints"),
-            NavDestinationItem(3, "الأمان وFinOps", Icons.Default.Security, "nav_enterprise"),
-            NavDestinationItem(4, "النماذج والبحث", Icons.Default.Memory, "nav_models")
+            NavDestinationItem(3, "الأمان", Icons.Default.Security, "nav_enterprise"),
+            NavDestinationItem(4, "النماذج", Icons.Default.Memory, "nav_models")
         )
     }
 
@@ -148,8 +151,10 @@ fun MainAppScreen(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isWideScreen = maxWidth >= 600.dp
+        val adaptive = rememberAdaptiveScreenSpec(maxWidth = maxWidth, maxHeight = maxHeight)
+        val isWideScreen = adaptive.useDualPane
 
+        CompositionLocalProvider(LocalAdaptiveScreenSpec provides adaptive) {
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             topBar = {
@@ -157,28 +162,32 @@ fun MainAppScreen(
                     title = {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(if (adaptive.isUltraCompact) 6.dp else 10.dp)
                         ) {
                             Image(
                                 painter = painterResource(id = R.drawable.app_logo),
                                 contentDescription = "Forgeprom Code Studio Icon",
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier.size(36.dp).clip(RoundedCornerShape(9.dp))
+                                modifier = Modifier
+                                    .size(if (adaptive.isUltraCompact) 30.dp else 36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
                             )
-                            Column {
+                            Column(modifier = Modifier.weight(1f, fill = false)) {
                                 Text(
-                                    text = "Forgeprom Code Studio",
+                                    text = if (adaptive.isUltraCompact) "Forgeprom" else "Forgeprom Code Studio",
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
+                                    fontSize = if (adaptive.isUltraCompact) 13.sp else 15.sp,
                                     color = visual.primaryText,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = if (isOnline) "متصل بالخادم (${serverStatus?.latencyMs ?: 0}ms) + محلي"
-                                    else "وضع محلي 100% (${networkState.connectionType})",
-                                    fontSize = 11.sp,
+                                    text = if (isOnline) "متصل (${serverStatus?.latencyMs ?: 0}ms) + محلي"
+                                    else "محلي 100% (${networkState.connectionType})",
+                                    fontSize = if (adaptive.isUltraCompact) 10.sp else 11.sp,
                                     color = if (isOnline) Color(0xFF10B981) else visual.accentPrimary,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -199,11 +208,14 @@ fun MainAppScreen(
                             onClick = { showServerDialog = true },
                             color = if (isOnline) Color(0xFF065F46).copy(alpha = 0.85f) else Color(0xFF1E3A8A).copy(alpha = 0.85f),
                             shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.padding(end = 8.dp).testTag("server_status_badge")
+                            modifier = Modifier.padding(end = 6.dp).testTag("server_status_badge")
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(
+                                    horizontal = if (adaptive.isUltraCompact) 7.dp else 10.dp,
+                                    vertical = 6.dp
+                                ),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Icon(
@@ -212,19 +224,22 @@ fun MainAppScreen(
                                     tint = if (isOnline) Color(0xFF34D399) else Color(0xFF93C5FD),
                                     modifier = Modifier.size(14.dp)
                                 )
-                                Text(
-                                    text = if (isCheckingServer) "جارٍ الفحص..." else if (isOnline) "متصل" else "محلي 100%",
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                                if (!adaptive.isUltraCompact) {
+                                    Text(
+                                        text = if (isCheckingServer) "فحص..." else if (isOnline) "متصل" else "محلي",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     }
                 )
             },
             bottomBar = {
-                if (!isWideScreen) {
+                if (!adaptive.useNavigationRail) {
                     NavigationBar(
                         containerColor = visual.surfaceBg,
                         contentColor = visual.primaryText
@@ -234,7 +249,16 @@ fun MainAppScreen(
                                 selected = activeTab == item.index,
                                 onClick = { activeTab = item.index },
                                 icon = { Icon(item.icon, contentDescription = item.label) },
-                                label = { Text(item.label, fontSize = 9.sp, maxLines = 1) },
+                                label = {
+                                    Text(
+                                        text = item.label,
+                                        fontSize = if (adaptive.isUltraCompact) 9.sp else 10.sp,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                alwaysShowLabel = !adaptive.isUltraCompact,
                                 modifier = Modifier.testTag(item.testTag)
                             )
                         }
@@ -260,31 +284,46 @@ fun MainAppScreen(
                     .fillMaxSize()
                     .padding(padding)
             ) {
-                // NavigationRail جانبي تلقائي للشاشات المتوسطة والعريضة (Tablets / Foldables / Landscape)
-                if (isWideScreen) {
+                // NavigationRail جانبي تلقائي وقابل للتمرير للتابلت، القابلة للطي، والهواتف بالوضع الأفقي
+                if (adaptive.useNavigationRail) {
                     NavigationRail(
                         containerColor = visual.surfaceBg,
                         contentColor = visual.primaryText,
                         modifier = Modifier.fillMaxHeight().testTag("wide_navigation_rail")
                     ) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        navItems.forEach { item ->
-                            NavigationRailItem(
-                                selected = activeTab == item.index,
-                                onClick = { activeTab = item.index },
-                                icon = { Icon(item.icon, contentDescription = item.label) },
-                                label = { Text(item.label, fontSize = 10.sp) },
-                                modifier = Modifier.testTag(item.testTag)
-                            )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            navItems.forEach { item ->
+                                NavigationRailItem(
+                                    selected = activeTab == item.index,
+                                    onClick = { activeTab = item.index },
+                                    icon = { Icon(item.icon, contentDescription = item.label) },
+                                    label = { Text(item.label, fontSize = 10.sp, maxLines = 1) },
+                                    alwaysShowLabel = !adaptive.isShortLandscape,
+                                    modifier = Modifier.testTag(item.testTag)
+                                )
+                            }
                         }
                     }
                 }
 
-                Column(
+                Box(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
-                        .padding(horizontal = visual.contentPadding, vertical = 8.dp)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .widthIn(max = adaptive.maxContentWidth)
+                        .padding(horizontal = adaptive.horizontalOuterPadding, vertical = if (adaptive.isShortLandscape) 4.dp else 8.dp)
                 ) {
                     if (!actionFeedback.isNullOrBlank()) {
                         Surface(
@@ -625,8 +664,9 @@ fun MainAppScreen(
                                 fontSize = (15f + visual.fontDelta).sp,
                                 modifier = Modifier.padding(bottom = 8.dp)
                             )
-                            val chunkedBlueprints = remember(blueprints, isWideScreen) {
-                                if (isWideScreen) blueprints.chunked(2) else blueprints.map { listOf(it) }
+                            val bpColumns = adaptive.gridColumns
+                            val chunkedBlueprints = remember(blueprints, bpColumns) {
+                                blueprints.chunked(bpColumns)
                             }
                             LazyColumn(
                                 verticalArrangement = Arrangement.spacedBy(visual.itemSpacing),
@@ -646,7 +686,7 @@ fun MainAppScreen(
                                                 modifier = Modifier.weight(1f)
                                             ) {
                                                 Column(
-                                                    modifier = Modifier.padding(visual.contentPadding),
+                                                    modifier = Modifier.padding(adaptive.adaptiveCardPadding(visual.contentPadding)),
                                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                                 ) {
                                                     Row(
@@ -678,15 +718,15 @@ fun MainAppScreen(
                                                             activeTab = 0
                                                         },
                                                         colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                                                        modifier = Modifier.heightIn(min = 38.dp),
+                                                        modifier = Modifier.heightIn(min = 42.dp),
                                                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                                     ) {
-                                                        Text("استخدام القالب وإنشاء المشروع", fontSize = 11.sp)
+                                                        Text("استخدام القالب وإنشاء المشروع", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                     }
                                                 }
                                             }
                                         }
-                                        if (isWideScreen && rowItems.size == 1) {
+                                        repeat(bpColumns - rowItems.size) {
                                             Spacer(modifier = Modifier.weight(1f))
                                         }
                                     }
@@ -709,8 +749,9 @@ fun MainAppScreen(
                         }
 
                         4 -> {
-                            val chunkedModels = remember(models, isWideScreen) {
-                                if (isWideScreen) models.chunked(2) else models.map { listOf(it) }
+                            val modelColumns = adaptive.gridColumns
+                            val chunkedModels = remember(models, modelColumns) {
+                                models.chunked(modelColumns)
                             }
                             LazyColumn(
                                 verticalArrangement = Arrangement.spacedBy(visual.itemSpacing),
@@ -832,7 +873,7 @@ fun MainAppScreen(
                                                 }
                                             }
                                         }
-                                        if (isWideScreen && rowModels.size == 1) {
+                                        repeat(modelColumns - rowModels.size) {
                                             Spacer(modifier = Modifier.weight(1f))
                                         }
                                     }
@@ -884,98 +925,100 @@ fun MainAppScreen(
                         }
                     }
                 }
+                }
             }
         }
-    }
 
-    if (showNewProjectDialog) {
-        NewProjectDialog(
-            isOnline = isOnline,
-            onDismiss = { showNewProjectDialog = false },
-            onCreateProject = onNewProject
-        )
-    }
+        if (showNewProjectDialog) {
+            NewProjectDialog(
+                isOnline = isOnline,
+                onDismiss = { showNewProjectDialog = false },
+                onCreateProject = onNewProject
+            )
+        }
 
-    if (showServerDialog) {
-        ServerConfigDialog(
-            currentServerUrl = currentServerUrl,
-            onDismiss = { showServerDialog = false },
-            onSaveServerUrl = onUpdateServerUrl,
-            onResetDefaultUrl = onResetServerUrl
-        )
-    }
+        if (showServerDialog) {
+            ServerConfigDialog(
+                currentServerUrl = currentServerUrl,
+                onDismiss = { showServerDialog = false },
+                onSaveServerUrl = onUpdateServerUrl,
+                onResetDefaultUrl = onResetServerUrl
+            )
+        }
 
-    if (showAppearanceSheet) {
-        AppearanceStudioBottomSheet(
-            visualSettings = visualSettings,
-            onUpdateSettings = onUpdateVisualSettings,
-            onDismiss = { showAppearanceSheet = false }
-        )
-    }
+        if (showAppearanceSheet) {
+            AppearanceStudioBottomSheet(
+                visualSettings = visualSettings,
+                onUpdateSettings = onUpdateVisualSettings,
+                onDismiss = { showAppearanceSheet = false }
+            )
+        }
 
-    selectedProjectForDialog?.let { proj ->
-        AlertDialog(
-            onDismissRequest = { selectedProjectForDialog = null },
-            text = {
-                Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    ProjectDetailPanelContent(
-                        project = proj,
-                        onOpenInStudio = {
-                            activeStudioProject = it
-                            selectedProjectForDialog = null
-                            activeTab = 1
-                        },
-                        onEditPrompt = {
-                            selectedProjectForDialog = null
-                            projectToEditPrompt = it
-                        },
-                        onArchiveProject = {
-                            selectedProjectForDialog = null
-                            onArchiveProject(it)
-                        },
-                        onShareProject = onShareProject,
-                        onExportPdf = onExportPdf,
-                        onExportStarterZip = onExportStarterZip,
-                        onCopyPrompt = { onCopyText(it.name, it.currentPromptText ?: it.rawIdea, false) }
-                    )
+        selectedProjectForDialog?.let { proj ->
+            AlertDialog(
+                onDismissRequest = { selectedProjectForDialog = null },
+                text = {
+                    Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        ProjectDetailPanelContent(
+                            project = proj,
+                            onOpenInStudio = {
+                                activeStudioProject = it
+                                selectedProjectForDialog = null
+                                activeTab = 1
+                            },
+                            onEditPrompt = {
+                                selectedProjectForDialog = null
+                                projectToEditPrompt = it
+                            },
+                            onArchiveProject = {
+                                selectedProjectForDialog = null
+                                onArchiveProject(it)
+                            },
+                            onShareProject = onShareProject,
+                            onExportPdf = onExportPdf,
+                            onExportStarterZip = onExportStarterZip,
+                            onCopyPrompt = { onCopyText(it.name, it.currentPromptText ?: it.rawIdea, false) }
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { selectedProjectForDialog = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary)
+                    ) {
+                        Text("إغلاق")
+                    }
+                },
+                containerColor = visual.surfaceBg
+            )
+        }
+
+        projectToEditPrompt?.let { proj ->
+            EditPromptDialog(
+                project = proj,
+                onDismiss = { projectToEditPrompt = null },
+                onSavePrompt = { updatedText ->
+                    onUpdateProjectPrompt(proj, updatedText, "✓ تم حفظ تعديلات البرومبت والمواصفات بنجاح")
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { selectedProjectForDialog = null },
-                    colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary)
-                ) {
-                    Text("إغلاق")
-                }
-            },
-            containerColor = visual.surfaceBg
-        )
-    }
+            )
+        }
 
-    projectToEditPrompt?.let { proj ->
-        EditPromptDialog(
-            project = proj,
-            onDismiss = { projectToEditPrompt = null },
-            onSavePrompt = { updatedText ->
-                onUpdateProjectPrompt(proj, updatedText, "✓ تم حفظ تعديلات البرومبت والمواصفات بنجاح")
-            }
-        )
-    }
-
-    projectPendingDelete?.let { proj ->
-        DeleteProjectConfirmDialog(
-            project = proj,
-            onConfirm = {
-                if (selectedProjectForDialog?.id == proj.id) {
-                    selectedProjectForDialog = null
-                }
-                if (activeStudioProject?.id == proj.id) {
-                    activeStudioProject = null
-                }
-                onDeleteProject(proj)
-                projectPendingDelete = null
-            },
-            onDismiss = { projectPendingDelete = null }
-        )
+        projectPendingDelete?.let { proj ->
+            DeleteProjectConfirmDialog(
+                project = proj,
+                onConfirm = {
+                    if (selectedProjectForDialog?.id == proj.id) {
+                        selectedProjectForDialog = null
+                    }
+                    if (activeStudioProject?.id == proj.id) {
+                        activeStudioProject = null
+                    }
+                    onDeleteProject(proj)
+                    projectPendingDelete = null
+                },
+                onDismiss = { projectPendingDelete = null }
+            )
+        }
+        }
     }
 }

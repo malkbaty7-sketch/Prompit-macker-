@@ -4,7 +4,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -24,15 +26,17 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.forgeprom.codestudio.core.ui.CardVisualStyle
+import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.core.ui.StudioVisualSettings
 import java.util.Locale
 
 /**
- * 1. شريط التحكم البصري السريع + زر فتح استوديو تخصيص المظهر
+ * 1. شريط التحكم البصري السريع القابل للتمرير الأفقي (لا ينقص النص على أي شاشة صغيرة أو خط كبير)
  */
 @Composable
 fun StudioVisualControlBar(
@@ -46,59 +50,61 @@ fun StudioVisualControlBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
             .padding(bottom = 6.dp)
             .testTag("visual_control_bar"),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         FilterChip(
             selected = visualSettings.cardStyle == CardVisualStyle.EXTRUDED_3D,
             onClick = onToggle3DDepth,
-            label = { Text("3D", fontSize = 10.sp, maxLines = 1) },
+            label = { Text("عمق 3D", fontSize = 11.sp, maxLines = 1, softWrap = false) },
             leadingIcon = {
-                Icon(Icons.Default.ViewInAr, contentDescription = "العمق ثلاثي الأبعاد", modifier = Modifier.size(14.dp))
+                Icon(Icons.Default.ViewInAr, contentDescription = "العمق ثلاثي الأبعاد", modifier = Modifier.size(15.dp))
             },
-            modifier = Modifier.weight(0.85f).testTag("toggle_3d_depth_chip")
+            modifier = Modifier.testTag("toggle_3d_depth_chip")
         )
 
         FilterChip(
             selected = visualSettings.isEyeComfortWarm,
             onClick = onToggleEyeComfort,
-            label = { Text("راحة العين", fontSize = 10.sp, maxLines = 1) },
+            label = { Text("راحة العين", fontSize = 11.sp, maxLines = 1, softWrap = false) },
             leadingIcon = {
-                Icon(Icons.Default.Visibility, contentDescription = "حماية العين", modifier = Modifier.size(14.dp))
+                Icon(Icons.Default.Visibility, contentDescription = "حماية العين", modifier = Modifier.size(15.dp))
             },
-            modifier = Modifier.weight(1.1f).testTag("toggle_eye_comfort_chip")
+            modifier = Modifier.testTag("toggle_eye_comfort_chip")
         )
 
         FilterChip(
             selected = !visual.isDarkTheme,
             onClick = onToggleDarkTheme,
-            label = { Text(if (visual.isDarkTheme) "ليلي" else "ورقي", fontSize = 10.sp, maxLines = 1) },
+            label = { Text(if (visual.isDarkTheme) "ليلي" else "ورقي", fontSize = 11.sp, maxLines = 1, softWrap = false) },
             leadingIcon = {
                 Icon(
                     imageVector = if (visual.isDarkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
                     contentDescription = "تبديل السطوع",
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(15.dp)
                 )
             },
-            modifier = Modifier.weight(0.95f).testTag("toggle_theme_mode_chip")
+            modifier = Modifier.testTag("toggle_theme_mode_chip")
         )
 
         FilledTonalButton(
             onClick = onOpenAppearanceStudio,
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-            modifier = Modifier.height(34.dp).testTag("open_appearance_studio_button")
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.heightIn(min = 36.dp).testTag("open_appearance_studio_button")
         ) {
             Icon(Icons.Default.Palette, contentDescription = "تخصيص المظهر", modifier = Modifier.size(15.dp))
-            Spacer(modifier = Modifier.width(4.dp))
-            Text("المظهر", fontSize = 10.sp, maxLines = 1)
+            Spacer(modifier = Modifier.width(5.dp))
+            Text("المظهر والشاشة", fontSize = 11.sp, maxLines = 1, softWrap = false)
         }
     }
 }
 
 /**
  * 2. لوحة قيادة العتاد التكيفية ثلاثية الأبعاد (Adaptive 3D Telemetry HUD)
+ * تتحول تلقائياً إلى شريط مضغوط قابل للتوسيع على الشاشات الأفقية والهواتف الصغيرة جداً لحفظ مساحة المحتوى.
  */
 @Composable
 fun HardwareTelemetryHud3D(
@@ -110,20 +116,76 @@ fun HardwareTelemetryHud3D(
     onCheckServer: () -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val adaptive = LocalAdaptiveScreenSpec.current
+    var isExpanded by remember(adaptive.preferCompactHudByDefault) {
+        mutableStateOf(!adaptive.preferCompactHudByDefault)
+    }
+
     val ramProgress = (availableRamMB.toFloat() / 6144f).coerceIn(0.15f, 1f)
+    val ramGbFormatted = remember(availableRamMB) {
+        String.format(Locale.US, "%.1f", availableRamMB / 1024f)
+    }
     val accentPrimary = visual.accentPrimary
     val accentSecondary = visual.accentSecondary
+    val cardPad = adaptive.adaptiveCardPadding(visual.contentPadding)
 
     Card(
         colors = CardDefaults.cardColors(containerColor = visual.surfaceBg),
         elevation = CardDefaults.cardElevation(defaultElevation = visual.cardElevation),
         border = visual.cardBorder,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(14.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = visual.itemSpacing)
+            .padding(bottom = if (adaptive.isShortLandscape) 6.dp else visual.itemSpacing)
             .testTag("hardware_hud_3d_card")
     ) {
+        if (!isExpanded) {
+            // شريط مضغوط ذكي للهواتف بالوضع الأفقي أو الشاشات شديدة الضيق (<360dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = true }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Memory,
+                        contentDescription = null,
+                        tint = accentSecondary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "RAM ${ramGbFormatted}G • $connectionType • $projectsCount مشاريع • جودة $averageQualityScore%",
+                        color = visual.primaryText,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onCheckServer,
+                        modifier = Modifier.size(36.dp).testTag("check_server_button")
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "فحص الخادم", modifier = Modifier.size(16.dp), tint = accentSecondary)
+                    }
+                    IconButton(
+                        onClick = { isExpanded = true },
+                        modifier = Modifier.size(36.dp).testTag("expand_hud_button")
+                    ) {
+                        Icon(Icons.Default.ExpandMore, contentDescription = "توسيع لوحة العتاد", modifier = Modifier.size(18.dp), tint = visual.secondaryText)
+                    }
+                }
+            }
+            return@Card
+        }
+
         val headerBgModifier = if (visual.performanceLiteMode) {
             Modifier.fillMaxWidth()
         } else {
@@ -138,8 +200,8 @@ fun HardwareTelemetryHud3D(
         }
 
         Column(
-            modifier = headerBgModifier.padding(visual.contentPadding),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = headerBgModifier.padding(cardPad),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -148,12 +210,12 @@ fun HardwareTelemetryHud3D(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Box(
                         contentAlignment = Alignment.Center,
-                        modifier = Modifier.size(52.dp)
+                        modifier = Modifier.size(if (adaptive.isUltraCompact) 44.dp else 52.dp)
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
                             val strokeWidth = size.minDimension * 0.13f
@@ -174,40 +236,46 @@ fun HardwareTelemetryHud3D(
                         }
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                text = "${(availableRamMB / 1024f).let { String.format(Locale.US, "%.1f", it) }}G",
+                                text = "${ramGbFormatted}G",
                                 fontWeight = FontWeight.ExtraBold,
                                 color = visual.primaryText,
-                                fontSize = (10f + visual.fontDelta).sp
+                                fontSize = (if (adaptive.isUltraCompact) 9f else 10f).sp,
+                                maxLines = 1
                             )
                             Text(
                                 text = "RAM",
                                 color = accentSecondary,
-                                fontSize = 8.sp
+                                fontSize = 8.sp,
+                                maxLines = 1
                             )
                         }
                     }
 
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = if (visual.is3DDepthEnabled) "لوحة قياس العتاد ثلاثية الأبعاد (3D HUD)"
-                            else "فاحص العتاد والأمان (HardwareProfiler)",
+                            text = if (visual.is3DDepthEnabled) "لوحة العتاد التكيفية (3D HUD)"
+                            else "فاحص العتاد والأمان",
                             fontWeight = FontWeight.Bold,
                             color = visual.primaryText,
-                            fontSize = (12f + visual.fontDelta).sp
+                            fontSize = (12f + visual.fontDelta).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "الرام الحر: $availableRamMB MB | الشبكة: $connectionType",
+                            text = "الرام: $availableRamMB MB | $connectionType",
                             color = if (visual.isDarkTheme) accentSecondary else accentPrimary,
-                            fontSize = (11f + visual.fontDelta).sp
+                            fontSize = (11f + visual.fontDelta).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                if (isWideScreen) {
+                if (isWideScreen && !adaptive.isShortLandscape) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(end = 8.dp)
+                        modifier = Modifier.padding(end = 6.dp)
                     ) {
                         KpiMetricPill(
                             title = "المشاريع",
@@ -222,37 +290,54 @@ fun HardwareTelemetryHud3D(
                     }
                 }
 
-                OutlinedButton(
-                    onClick = onCheckServer,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    modifier = Modifier.heightIn(min = 36.dp).testTag("check_server_button")
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = "فحص الخادم", modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("فحص الخادم", fontSize = 10.sp)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (adaptive.isUltraCompact) {
+                        IconButton(
+                            onClick = onCheckServer,
+                            modifier = Modifier.minimumInteractiveComponentSize().testTag("check_server_button")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "فحص الخادم", tint = accentSecondary)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onCheckServer,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.heightIn(min = 38.dp).testTag("check_server_button")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "فحص الخادم", modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("فحص", fontSize = 10.sp, maxLines = 1)
+                        }
+                    }
+                    IconButton(
+                        onClick = { isExpanded = false },
+                        modifier = Modifier.size(34.dp).testTag("collapse_hud_button")
+                    ) {
+                        Icon(Icons.Default.ExpandLess, contentDescription = "طي لوحة العتاد", tint = visual.secondaryText, modifier = Modifier.size(18.dp))
+                    }
                 }
             }
 
-            if (!isWideScreen) {
+            if (!isWideScreen || adaptive.isShortLandscape) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     KpiMetricPill(
                         title = "المشاريع",
-                        value = "$projectsCount مشروع",
+                        value = "$projectsCount",
                         accentColor = if (visual.isDarkTheme) accentSecondary else accentPrimary,
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricPill(
-                        title = "متوسط الجودة",
+                        title = "الجودة",
                         value = "$averageQualityScore%",
                         accentColor = if (averageQualityScore >= 85) Color(0xFF10B981) else Color(0xFFD97706),
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricPill(
-                        title = "التشفير العتادي",
-                        value = "AES-256 نشط",
+                        title = "التشفير",
+                        value = "AES-256",
                         accentColor = Color(0xFF3B82F6),
                         modifier = Modifier.weight(1f)
                     )
@@ -437,15 +522,16 @@ fun VisualArchitectureBlueprintCanvas(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf("1. Presentation", "2. Domain & AI", "3. Data & Room").forEachIndexed { idx, label ->
                     FilterChip(
                         selected = selectedLayerIndex == idx,
                         onClick = { selectedLayerIndex = idx },
-                        label = { Text(label, fontSize = 10.sp, maxLines = 1) },
-                        modifier = Modifier.weight(1f)
+                        label = { Text(label, fontSize = 10.sp, maxLines = 1, softWrap = false) }
                     )
                 }
             }
@@ -527,7 +613,8 @@ fun IdeCodeTerminalViewer(
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 

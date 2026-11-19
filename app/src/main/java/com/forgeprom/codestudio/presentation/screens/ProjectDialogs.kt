@@ -16,8 +16,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
@@ -329,6 +331,7 @@ fun ProjectDetailPanelContent(
     onCopyPrompt: (ProjectEntity) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val adaptive = LocalAdaptiveScreenSpec.current
     val promptPreview = project.currentPromptText ?: project.rawIdea
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -350,28 +353,50 @@ fun ProjectDetailPanelContent(
             onCopy = { onCopyPrompt(project) }
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Button(
-                onClick = { onOpenInStudio(project) },
-                colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                modifier = Modifier.weight(1.3f).heightIn(min = 44.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
-            ) {
-                Icon(Icons.Default.AccountTree, contentDescription = null, modifier = Modifier.size(15.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("استوديو السلسلة", fontSize = 11.sp)
+        if (adaptive.isUltraCompact || adaptive.isHighFontScale) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { onOpenInStudio(project) },
+                    colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp)
+                ) {
+                    Icon(Icons.Default.AccountTree, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("فتح في استوديو السلسلة", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedButton(
+                    onClick = { onEditPrompt(project) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).testTag("edit_prompt_button")
+                ) {
+                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("تعديل النص", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
-            OutlinedButton(
-                onClick = { onEditPrompt(project) },
-                modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("edit_prompt_button"),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("تعديل النص", fontSize = 11.sp)
+                Button(
+                    onClick = { onOpenInStudio(project) },
+                    colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                    modifier = Modifier.weight(1.3f).heightIn(min = 46.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.AccountTree, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("استوديو السلسلة", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedButton(
+                    onClick = { onEditPrompt(project) },
+                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).testTag("edit_prompt_button"),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("تعديل النص", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
 
@@ -381,40 +406,40 @@ fun ProjectDetailPanelContent(
         ) {
             OutlinedButton(
                 onClick = { onShareProject(project) },
-                modifier = Modifier.weight(1f).heightIn(min = 42.dp),
-                contentPadding = PaddingValues(6.dp)
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                contentPadding = PaddingValues(4.dp)
             ) {
                 Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("مشاركة", fontSize = 10.sp)
+                Spacer(modifier = Modifier.width(3.dp))
+                Text("مشاركة", fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(
                 onClick = { onExportPdf(project) },
-                modifier = Modifier.weight(1f).heightIn(min = 42.dp),
-                contentPadding = PaddingValues(6.dp)
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                contentPadding = PaddingValues(4.dp)
             ) {
                 Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(14.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("PDF عربي", fontSize = 10.sp)
+                Spacer(modifier = Modifier.width(3.dp))
+                Text("PDF", fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(
                 onClick = { onExportStarterZip(project) },
-                modifier = Modifier.weight(1f).heightIn(min = 42.dp),
-                contentPadding = PaddingValues(6.dp)
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                contentPadding = PaddingValues(4.dp)
             ) {
                 Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(14.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("كود ZIP", fontSize = 10.sp)
+                Spacer(modifier = Modifier.width(3.dp))
+                Text("ZIP", fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
 
         OutlinedButton(
             onClick = { onArchiveProject(project) },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp).testTag("archive_project_button")
+            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("archive_project_button")
         ) {
             Icon(Icons.Default.Archive, contentDescription = null, modifier = Modifier.size(15.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text("نقل إلى الأرشيف الآمن (قابل للاستعادة)", fontSize = 11.sp)
+            Text("نقل إلى الأرشيف الآمن (قابل للاستعادة)", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

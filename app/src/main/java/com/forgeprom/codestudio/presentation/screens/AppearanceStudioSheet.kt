@@ -5,10 +5,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,6 +40,7 @@ fun AppearanceStudioBottomSheet(
     onDismiss: () -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
+    val adaptive = LocalAdaptiveScreenSpec.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val supportsDynamicColor = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
@@ -51,6 +54,7 @@ fun AppearanceStudioBottomSheet(
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
+                .widthIn(max = 600.dp)
                 .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -64,7 +68,8 @@ fun AppearanceStudioBottomSheet(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Palette,
@@ -74,13 +79,13 @@ fun AppearanceStudioBottomSheet(
                         )
                         Column {
                             Text(
-                                text = "استوديو المظهر والتجربة البصرية",
+                                text = "استوديو المظهر والتكيف مع الشاشة",
                                 fontWeight = FontWeight.Bold,
                                 color = visual.primaryText,
                                 fontSize = 15.sp
                             )
                             Text(
-                                text = "تخصيص ذكي متوافق مع شاشات الهواتف والتابلت (Android 8–15+)",
+                                text = "تخصيص ذكي متوافق مع كافة أحجام وأشكال جوالات أندرويد",
                                 color = visual.secondaryText,
                                 fontSize = 11.sp
                             )
@@ -92,6 +97,42 @@ fun AppearanceStudioBottomSheet(
                         modifier = Modifier.testTag("reset_appearance_button")
                     ) {
                         Text("افتراضي", fontSize = 11.sp, color = visual.accentSecondary)
+                    }
+                }
+            }
+
+            // بطاقة معلومات التكيف التلقائي مع شاشة الجهاز الحالية
+            item {
+                Surface(
+                    color = visual.recessedBg,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, visual.accentPrimary.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth().testTag("adaptive_screen_info_card")
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Devices,
+                            contentDescription = "توافق الشاشة الحالي",
+                            tint = visual.accentSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "وضع التكيف التلقائي للشاشة النشط",
+                                color = visual.primaryText,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                            Text(
+                                text = adaptive.summaryAr,
+                                color = visual.secondaryText,
+                                fontSize = 10.sp
+                            )
+                        }
                     }
                 }
             }
@@ -222,15 +263,17 @@ fun AppearanceStudioBottomSheet(
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     CardVisualStyle.entries.forEach { style ->
                         FilterChip(
                             selected = visualSettings.cardStyle == style,
                             onClick = { onUpdateSettings(visualSettings.copy(cardStyle = style)) },
-                            label = { Text(style.labelAr, fontSize = 10.sp, maxLines = 1) },
-                            modifier = Modifier.weight(1f).testTag("card_style_${style.name}")
+                            label = { Text(style.labelAr, fontSize = 11.sp, maxLines = 1, softWrap = false) },
+                            modifier = Modifier.testTag("card_style_${style.name}")
                         )
                     }
                 }
@@ -246,15 +289,17 @@ fun AppearanceStudioBottomSheet(
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     UiDensityMode.entries.forEach { density ->
                         FilterChip(
                             selected = visualSettings.densityMode == density,
                             onClick = { onUpdateSettings(visualSettings.copy(densityMode = density)) },
-                            label = { Text(density.labelAr, fontSize = 10.sp, maxLines = 1) },
-                            modifier = Modifier.weight(1f).testTag("density_${density.name}")
+                            label = { Text(density.labelAr, fontSize = 11.sp, maxLines = 1, softWrap = false) },
+                            modifier = Modifier.testTag("density_${density.name}")
                         )
                     }
                 }
