@@ -2,6 +2,8 @@ package com.forgeprom.codestudio.presentation.screens
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -43,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.forgeprom.codestudio.R
+import com.forgeprom.codestudio.core.diagnostics.ServiceDiagnosticsEngine
 import com.forgeprom.codestudio.core.export.NativeShareAndPdfHelper
 import com.forgeprom.codestudio.core.hardware.HardwareProfiler
 import com.forgeprom.codestudio.core.network.NetworkMonitor
@@ -50,12 +53,14 @@ import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.core.ui.StudioVisualSettings
 import com.forgeprom.codestudio.core.ui.rememberAdaptiveScreenSpec
+import com.forgeprom.codestudio.core.ux.LocalOfflineTtsReader
 import com.forgeprom.codestudio.core.ux.PromptSnapshot
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.data.remote.CloudApiService
 import com.forgeprom.codestudio.data.remote.ModelDownloadManager
 import com.forgeprom.codestudio.domain.blueprint.BlueprintAndScaffoldManager
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -97,8 +102,13 @@ fun MainAppScreen(
     busyStatusMessage: String?,
     shortcutAction: String?,
     onConsumeShortcutAction: () -> Unit,
-    historyRefreshCounter: Int,
-    onGetProjectHistory: (String) -> List<PromptSnapshot>,
+    promptVersionsMap: Map<String, List<PromptSnapshot>> = emptyMap(),
+    projectScoresMap: Map<String, Int> = emptyMap(),
+    projectSecurityScoresMap: Map<String, Int> = emptyMap(),
+    diagnosticsReport: ServiceDiagnosticsEngine.FullDiagnosticsReport? = null,
+    isRunningDiagnostics: Boolean = false,
+    onRunDiagnostics: (Boolean) -> Unit = {},
+    onRunSelfHeal: (Boolean) -> Unit = {},
     onRestorePromptSnapshot: (ProjectEntity, PromptSnapshot) -> Unit,
     onBatchPinProjects: (List<ProjectEntity>, Boolean) -> Unit,
     onBatchArchiveProjects: (List<ProjectEntity>) -> Unit,
@@ -128,10 +138,13 @@ fun MainAppScreen(
     onClearResearchCache: () -> Unit = {},
     onClearExportCache: () -> Unit = {},
     onUseBlueprint: (BlueprintAndScaffoldManager.IndustryBlueprint) -> Unit,
+    onSaveAsBlueprint: (ProjectEntity) -> Unit = {},
+    onDeleteCustomBlueprint: (String) -> Unit = {},
+    onRedactProjectSecrets: (ProjectEntity) -> Unit = {},
     onShareProject: (ProjectEntity) -> Unit,
     onShareExportedFile: (File, String) -> Unit,
     onExportPdf: (ProjectEntity) -> Unit,
-    onExportStarterZip: (ProjectEntity) -> Unit,
+    onExportStarterZip: (ProjectEntity, BlueprintAndScaffoldManager.ScaffoldExportConfig) -> Unit,
     onExportMarkdown: (ProjectEntity, String?) -> Unit,
     onUpdateProjectPrompt: (ProjectEntity, String, String) -> Unit,
     onTogglePinProject: (ProjectEntity) -> Unit,
@@ -146,11 +159,20 @@ fun MainAppScreen(
     onRestoreBackupProjects: () -> Unit,
     onExportBackupToUri: (Uri, String?) -> Unit = { _, _ -> },
     onRestoreBackupFromUri: (Uri, String?, () -> Unit) -> Unit = { _, _, _ -> },
+    onImportSpecFromUri: (Uri) -> Unit = {},
+    onBatchBoostAllProjects: () -> Unit = {},
+    onExportArchitecturePng: (ProjectEntity) -> Unit = {},
+    onVerifyModelIntegrity: (ModelDownloadManager.GgufModelInfo) -> Unit = {},
+    onAddCustomModel: (String, String, Long, String) -> Unit = { _, _, _, _ -> },
+    onRemoveCustomModel: (String) -> Unit = {},
+    estimateModelFit: (ModelDownloadManager.GgufModelInfo) -> ModelDownloadManager.ModelRuntimeFit? = { null },
     onNewProject: (String, String, String) -> Unit,
     onSelectProject: (ProjectEntity) -> Unit
 ) {
     val visual = LocalStudioVisualSettings.current
     val haptic = LocalHapticFeedback.current
+    val ttsReader = LocalOfflineTtsReader.current
+    val ttsState by (ttsReader?.state?.collectAsState() ?: remember { mutableStateOf(null) })
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val projectsListState = rememberLazyListState()
@@ -161,16 +183,30 @@ fun MainAppScreen(
     var showAppearanceSheet by remember { mutableStateOf(false) }
     var showCommandPalette by remember { mutableStateOf(false) }
     var showReadinessInsights by remember { mutableStateOf(false) }
+    var showServiceDiagnostics by remember { mutableStateOf(false) }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     var selectedProjectForDialog by remember { mutableStateOf<ProjectEntity?>(null) }
     var activeStudioProject by remember { mutableStateOf<ProjectEntity?>(null) }
     var projectPendingDelete by remember { mutableStateOf<ProjectEntity?>(null) }
     var projectToEditPrompt by remember { mutableStateOf<ProjectEntity?>(null) }
     var projectForVersionHistory by remember { mutableStateOf<ProjectEntity?>(null) }
+    var projectForScaffoldBuilder by remember { mutableStateOf<ProjectEntity?>(null) }
     var previewedBlueprint by remember { mutableStateOf<BlueprintAndScaffoldManager.IndustryBlueprint?>(null) }
     var modelPendingMeteredConfirm by remember { mutableStateOf<ModelDownloadManager.GgufModelInfo?>(null) }
+    var showProjectComparator by remember { mutableStateOf(false) }
+    var showAddCustomModelDialog by remember { mutableStateOf(false) }
+    var projectForMermaidDialog by remember { mutableStateOf<ProjectEntity?>(null) }
+
+    val specImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            onImportSpecFromUri(uri)
+        }
+    }
 
     var searchQuery by remember { mutableStateOf("") }
+    var debouncedSearchQuery by remember { mutableStateOf("") }
     var selectedPlatformFilter by remember { mutableStateOf("ALL") }
     var sortMode by remember { mutableStateOf(ProjectSortMode.RECENT) }
     var blueprintSearchQuery by remember { mutableStateOf("") }
@@ -231,11 +267,12 @@ fun MainAppScreen(
         projects.find { it.id == sel.id }
     } ?: projects.firstOrNull()
 
-    val projectScoresMap = remember(projects, archivedProjects) {
-        (projects + archivedProjects).associate { proj ->
-            proj.id to PromptEngineeringEngine.evaluatePromptQuality(
-                proj.currentPromptText ?: proj.rawIdea
-            ).totalScore
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.isBlank()) {
+            debouncedSearchQuery = ""
+        } else {
+            delay(180L)
+            debouncedSearchQuery = searchQuery.trim()
         }
     }
 
@@ -244,12 +281,15 @@ fun MainAppScreen(
         else projects.map { projectScoresMap[it.id] ?: 80 }.average().toInt()
     }
 
-    val filteredProjects = remember(projects, archivedProjects, searchQuery, selectedPlatformFilter, sortMode, projectScoresMap) {
+    val filteredProjects = remember(projects, archivedProjects, debouncedSearchQuery, selectedPlatformFilter, sortMode, projectScoresMap) {
         val sourceList = if (selectedPlatformFilter == "ARCHIVED") archivedProjects else projects
         val filtered = sourceList.filter { proj ->
-            val matchesQuery = searchQuery.isBlank() ||
-                proj.name.contains(searchQuery, ignoreCase = true) ||
-                proj.description.contains(searchQuery, ignoreCase = true)
+            val matchesQuery = debouncedSearchQuery.isBlank() ||
+                proj.name.contains(debouncedSearchQuery, ignoreCase = true) ||
+                proj.description.contains(debouncedSearchQuery, ignoreCase = true) ||
+                proj.rawIdea.contains(debouncedSearchQuery, ignoreCase = true) ||
+                (proj.currentPromptText?.contains(debouncedSearchQuery, ignoreCase = true) == true) ||
+                proj.targetPlatform.contains(debouncedSearchQuery, ignoreCase = true)
             val matchesFilter = when (selectedPlatformFilter) {
                 "ALL", "ARCHIVED" -> true
                 "PINNED" -> proj.isPinned
@@ -808,6 +848,26 @@ fun MainAppScreen(
                                             leadingIcon = { Icon(Icons.Default.Insights, contentDescription = null, modifier = Modifier.size(14.dp)) },
                                             modifier = Modifier.testTag("projects_insights_chip")
                                         )
+                                        AssistChip(
+                                            onClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                specImportLauncher.launch(arrayOf("text/markdown", "text/plain", "text/*", "application/x-yaml", "*/*"))
+                                            },
+                                            label = { Text("استيراد مواصفات", fontSize = 10.sp, maxLines = 1) },
+                                            leadingIcon = { Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                                            modifier = Modifier.testTag("import_spec_file_chip")
+                                        )
+                                        if (projects.size >= 2) {
+                                            AssistChip(
+                                                onClick = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    showProjectComparator = true
+                                                },
+                                                label = { Text("مقارنة مشروعين", fontSize = 10.sp, maxLines = 1) },
+                                                leadingIcon = { Icon(Icons.Default.CompareArrows, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                                                modifier = Modifier.testTag("projects_compare_chip")
+                                            )
+                                        }
                                     }
 
                                     if (filteredProjects.isEmpty()) {
@@ -1217,9 +1277,7 @@ fun MainAppScreen(
                                                 .padding(visual.contentPadding)
                                         ) {
                                             if (currentActiveProject != null) {
-                                                val vCount = remember(currentActiveProject.id, historyRefreshCounter) {
-                                                    onGetProjectHistory(currentActiveProject.id).size
-                                                }
+                                                val vCount = promptVersionsMap[currentActiveProject.id]?.size ?: 0
                                                 ProjectDetailPanelContent(
                                                     project = currentActiveProject,
                                                     versionCount = vCount,
@@ -1229,11 +1287,12 @@ fun MainAppScreen(
                                                     },
                                                     onEditPrompt = { projectToEditPrompt = it },
                                                     onOpenVersionHistory = { projectForVersionHistory = it },
+                                                    onSaveAsBlueprint = onSaveAsBlueprint,
                                                     onDuplicateProject = onDuplicateProject,
                                                     onArchiveProject = onArchiveProject,
                                                     onShareProject = onShareProject,
                                                     onExportPdf = onExportPdf,
-                                                    onExportStarterZip = onExportStarterZip,
+                                                    onExportStarterZip = { projectForScaffoldBuilder = it },
                                                     onCopyPrompt = {
                                                         onCopyText(it.name, it.currentPromptText ?: it.rawIdea, false)
                                                     }
@@ -1261,7 +1320,9 @@ fun MainAppScreen(
                                 onUpdateProjectPrompt = onUpdateProjectPrompt,
                                 onAnalyzeWireframeUri = onAnalyzeWireframeUri,
                                 onCopyText = onCopyText,
-                                onExportMarkdown = { proj, content -> onExportMarkdown(proj, content) }
+                                onExportMarkdown = { proj, content -> onExportMarkdown(proj, content) },
+                                onExportArchitecturePng = onExportArchitecturePng,
+                                onShowMermaidDiagram = { proj -> projectForMermaidDialog = proj }
                             )
                         }
 
@@ -1285,13 +1346,30 @@ fun MainAppScreen(
                                 filteredBlueprints.chunked(bpColumns)
                             }
                             Column(modifier = Modifier.fillMaxSize()) {
-                                Text(
-                                    text = "مكتبة القوالب الهندسية الجاهزة (${filteredBlueprints.size} قوالب)",
-                                    fontWeight = FontWeight.Bold,
-                                    color = visual.primaryText,
-                                    fontSize = (15f + visual.fontDelta).sp,
-                                    modifier = Modifier.padding(bottom = 6.dp)
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "مكتبة القوالب الهندسية (${filteredBlueprints.size} قوالب)",
+                                        fontWeight = FontWeight.Bold,
+                                        color = visual.primaryText,
+                                        fontSize = (15f + visual.fontDelta).sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (currentActiveProject != null) {
+                                        FilledTonalButton(
+                                            onClick = { onSaveAsBlueprint(currentActiveProject) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            modifier = Modifier.heightIn(min = 38.dp).testTag("tab_save_active_as_blueprint_button")
+                                        ) {
+                                            Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(15.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("حفظ النشط كقالب", fontSize = 10.sp)
+                                        }
+                                    }
+                                }
                                 OutlinedTextField(
                                     value = blueprintSearchQuery,
                                     onValueChange = { blueprintSearchQuery = it },
@@ -1333,7 +1411,7 @@ fun MainAppScreen(
                                                 Card(
                                                     colors = CardDefaults.cardColors(containerColor = visual.surfaceBg),
                                                     elevation = CardDefaults.cardElevation(defaultElevation = visual.cardElevation),
-                                                    border = visual.cardBorder,
+                                                    border = if (bp.isCustom) BorderStroke(1.dp, visual.accentSecondary.copy(alpha = 0.55f)) else visual.cardBorder,
                                                     shape = RoundedCornerShape(12.dp),
                                                     modifier = Modifier.weight(1f)
                                                 ) {
@@ -1353,11 +1431,42 @@ fun MainAppScreen(
                                                                 fontSize = (13f + visual.fontDelta).sp,
                                                                 modifier = Modifier.weight(1f)
                                                             )
-                                                            Text(
-                                                                text = bp.category,
-                                                                color = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
-                                                                fontSize = 10.sp
-                                                            )
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                            ) {
+                                                                if (bp.isCustom) {
+                                                                    Surface(
+                                                                        color = visual.accentSecondary.copy(alpha = 0.22f),
+                                                                        shape = RoundedCornerShape(6.dp)
+                                                                    ) {
+                                                                        Text(
+                                                                            text = "قالب مخصص",
+                                                                            color = visual.accentSecondary,
+                                                                            fontSize = 9.sp,
+                                                                            fontWeight = FontWeight.Bold,
+                                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                                        )
+                                                                    }
+                                                                    IconButton(
+                                                                        onClick = { onDeleteCustomBlueprint(bp.id) },
+                                                                        modifier = Modifier.size(32.dp).testTag("delete_custom_bp_${bp.id}")
+                                                                    ) {
+                                                                        Icon(
+                                                                            Icons.Default.DeleteOutline,
+                                                                            contentDescription = "حذف القالب المخصص",
+                                                                            tint = Color(0xFFEF4444),
+                                                                            modifier = Modifier.size(16.dp)
+                                                                        )
+                                                                    }
+                                                                } else {
+                                                                    Text(
+                                                                        text = bp.category,
+                                                                        color = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
+                                                                        fontSize = 10.sp
+                                                                    )
+                                                                }
+                                                            }
                                                         }
                                                         Text(
                                                             text = bp.description,
@@ -1411,6 +1520,11 @@ fun MainAppScreen(
                                 onAppendSecurityToProject = { proj, secText ->
                                     val merged = (proj.currentPromptText ?: proj.rawIdea) + "\n" + secText
                                     onUpdateProjectPrompt(proj, merged, "✓ تم حقن ضوابط OWASP الأمنية الناقصة في برومبت المشروع")
+                                },
+                                onRedactProjectSecrets = onRedactProjectSecrets,
+                                onOpenServiceDiagnostics = {
+                                    showServiceDiagnostics = true
+                                    onRunDiagnostics(ttsState?.isReady == true)
                                 },
                                 onCopyText = onCopyText,
                                 onBackupAllProjects = onBackupAllProjects,
@@ -1525,12 +1639,26 @@ fun MainAppScreen(
                                             fontSize = (15f + visual.fontDelta).sp,
                                             modifier = Modifier.weight(1f)
                                         )
-                                        ContextualHelpIconButton(
-                                            title = "ما هي نماذج GGUF Q4_K_M ومتطلبات RAM؟",
-                                            explanation = "ملفات GGUF هي نماذج ذكاء اصطناعي مضغوطة بتقنية 4-bit لتعمل مباشرة على هاتفك دون إنترنت وبخصوصية تامة. يدعم التنزيل الاستكمال التلقائي وحماية الذاكرة والتأكد من SHA-256.",
-                                            testTag = "help_gguf_models_button",
-                                            modifier = Modifier.size(32.dp)
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            FilledTonalButton(
+                                                onClick = { showAddCustomModelDialog = true },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                modifier = Modifier.heightIn(min = 36.dp).testTag("open_add_custom_model_button")
+                                            ) {
+                                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text("نموذج مخصّص", fontSize = 10.sp, maxLines = 1)
+                                            }
+                                            ContextualHelpIconButton(
+                                                title = "ما هي نماذج GGUF Q4_K_M ومتطلبات RAM؟",
+                                                explanation = "ملفات GGUF هي نماذج ذكاء اصطناعي مضغوطة بتقنية 4-bit لتعمل مباشرة على هاتفك دون إنترنت وبخصوصية تامة. يدعم التنزيل الاستكمال التلقائي وحماية الذاكرة وتقدير السرعة والتأكد من SHA-256.",
+                                                testTag = "help_gguf_models_button",
+                                                modifier = Modifier.size(32.dp)
+                                            )
+                                        }
                                     }
                                 }
                                 items(chunkedModels) { rowModels ->
@@ -1545,10 +1673,13 @@ fun MainAppScreen(
                                             val partialMB = partialModelSizesMB[model.id] ?: 0L
                                             val isDownloaded = model.id in downloadedModelIds
                                             val isDownloading = model.id in activeDownloadingIds
+                                            val runtimeFit = remember(model.id, availableRamMB, hardwareReport) {
+                                                estimateModelFit(model)
+                                            }
                                             Card(
                                                 colors = CardDefaults.cardColors(containerColor = visual.surfaceBg),
                                                 elevation = CardDefaults.cardElevation(defaultElevation = visual.cardElevation),
-                                                border = visual.cardBorder,
+                                                border = if (model.isCustom) BorderStroke(1.dp, visual.accentSecondary.copy(alpha = 0.55f)) else visual.cardBorder,
                                                 shape = RoundedCornerShape(12.dp),
                                                 modifier = Modifier.weight(1f)
                                             ) {
@@ -1568,17 +1699,54 @@ fun MainAppScreen(
                                                             fontSize = (13f + visual.fontDelta).sp,
                                                             modifier = Modifier.weight(1f)
                                                         )
-                                                        Text(
-                                                            text = "${model.fileSizeMB} MB (${model.quantization})",
-                                                            color = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
-                                                            fontSize = 10.sp
-                                                        )
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "${model.fileSizeMB} MB (${model.quantization})",
+                                                                color = if (visual.isDarkTheme) visual.accentSecondary else visual.accentPrimary,
+                                                                fontSize = 10.sp
+                                                            )
+                                                            if (model.isCustom && !isDownloading) {
+                                                                IconButton(
+                                                                    onClick = { onRemoveCustomModel(model.id) },
+                                                                    modifier = Modifier.size(30.dp).testTag("remove_custom_model_${model.id}")
+                                                                ) {
+                                                                    Icon(
+                                                                        Icons.Default.DeleteForever,
+                                                                        contentDescription = "إزالة النموذج المخصّص",
+                                                                        tint = Color(0xFFEF4444),
+                                                                        modifier = Modifier.size(16.dp)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                     Text(
                                                         text = model.arabicSupportLevel,
                                                         color = visual.secondaryText,
                                                         fontSize = (11f + visual.fontDelta).sp
                                                     )
+                                                    if (runtimeFit != null) {
+                                                        val fitColor = when {
+                                                            runtimeFit.isOptimal -> Color(0xFF10B981)
+                                                            runtimeFit.headroomRamMB >= 0L -> Color(0xFF60A5FA)
+                                                            else -> Color(0xFFF59E0B)
+                                                        }
+                                                        Surface(
+                                                            color = fitColor.copy(alpha = 0.14f),
+                                                            shape = RoundedCornerShape(6.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "⚡ ${runtimeFit.fitLabel}",
+                                                                color = fitColor,
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                            )
+                                                        }
+                                                    }
                                                     if (!isDownloaded && !isDownloading && partialMB > 0L) {
                                                         Surface(
                                                             color = Color(0xFF1E3A8A).copy(alpha = 0.25f),
@@ -1624,14 +1792,25 @@ fun MainAppScreen(
                                                                 }
                                                             }
                                                             isDownloaded -> {
-                                                                OutlinedButton(
-                                                                    onClick = { onDeleteDownloadedModel(model) },
-                                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                                                    modifier = Modifier.heightIn(min = 38.dp).testTag("delete_model_${model.id}")
-                                                                ) {
-                                                                    Icon(Icons.Default.DeleteOutline, contentDescription = "حذف النموذج", modifier = Modifier.size(14.dp), tint = Color(0xFFEF4444))
-                                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                                    Text("حذف الملف", fontSize = 11.sp, color = Color(0xFFEF4444))
+                                                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                                    OutlinedButton(
+                                                                        onClick = { onVerifyModelIntegrity(model) },
+                                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                                                        modifier = Modifier.heightIn(min = 38.dp).testTag("verify_model_${model.id}")
+                                                                    ) {
+                                                                        Icon(Icons.Default.VerifiedUser, contentDescription = "فحص SHA-256", modifier = Modifier.size(14.dp), tint = Color(0xFF10B981))
+                                                                        Spacer(modifier = Modifier.width(3.dp))
+                                                                        Text("فحص SHA", fontSize = 10.sp, color = Color(0xFF10B981))
+                                                                    }
+                                                                    OutlinedButton(
+                                                                        onClick = { onDeleteDownloadedModel(model) },
+                                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                                                        modifier = Modifier.heightIn(min = 38.dp).testTag("delete_model_${model.id}")
+                                                                    ) {
+                                                                        Icon(Icons.Default.DeleteOutline, contentDescription = "حذف النموذج", modifier = Modifier.size(14.dp), tint = Color(0xFFEF4444))
+                                                                        Spacer(modifier = Modifier.width(3.dp))
+                                                                        Text("حذف", fontSize = 10.sp, color = Color(0xFFEF4444))
+                                                                    }
                                                                 }
                                                             }
                                                             else -> {
@@ -1828,9 +2007,7 @@ fun MainAppScreen(
         }
 
         selectedProjectForDialog?.let { proj ->
-            val vCount = remember(proj.id, historyRefreshCounter) {
-                onGetProjectHistory(proj.id).size
-            }
+            val vCount = promptVersionsMap[proj.id]?.size ?: 0
             AlertDialog(
                 onDismissRequest = { selectedProjectForDialog = null },
                 text = {
@@ -1851,6 +2028,10 @@ fun MainAppScreen(
                                 selectedProjectForDialog = null
                                 projectForVersionHistory = it
                             },
+                            onSaveAsBlueprint = {
+                                selectedProjectForDialog = null
+                                onSaveAsBlueprint(it)
+                            },
                             onDuplicateProject = {
                                 selectedProjectForDialog = null
                                 onDuplicateProject(it)
@@ -1861,7 +2042,10 @@ fun MainAppScreen(
                             },
                             onShareProject = onShareProject,
                             onExportPdf = onExportPdf,
-                            onExportStarterZip = onExportStarterZip,
+                            onExportStarterZip = {
+                                selectedProjectForDialog = null
+                                projectForScaffoldBuilder = it
+                            },
                             onCopyPrompt = { onCopyText(it.name, it.currentPromptText ?: it.rawIdea, false) }
                         )
                     }
@@ -1878,10 +2062,28 @@ fun MainAppScreen(
             )
         }
 
+        projectForScaffoldBuilder?.let { proj ->
+            CustomScaffoldBuilderDialog(
+                project = proj,
+                onDismiss = { projectForScaffoldBuilder = null },
+                onGenerateZip = { config ->
+                    onExportStarterZip(proj, config)
+                }
+            )
+        }
+
+        if (showServiceDiagnostics) {
+            ServiceDiagnosticsDialog(
+                report = diagnosticsReport,
+                isRunning = isRunningDiagnostics,
+                onReRunDiagnostics = { onRunDiagnostics(ttsState?.isReady == true) },
+                onRunSelfHeal = { onRunSelfHeal(ttsState?.isReady == true) },
+                onDismiss = { showServiceDiagnostics = false }
+            )
+        }
+
         projectForVersionHistory?.let { proj ->
-            val snapshots = remember(proj.id, historyRefreshCounter) {
-                onGetProjectHistory(proj.id)
-            }
+            val snapshots = promptVersionsMap[proj.id].orEmpty()
             PromptVersionHistoryDialog(
                 project = proj,
                 snapshots = snapshots,
@@ -1912,7 +2114,41 @@ fun MainAppScreen(
                 onOpenInStudio = { proj ->
                     activeStudioProject = proj
                     activeTab = 1
+                },
+                onBatchBoostAll = onBatchBoostAllProjects,
+                onOpenComparator = {
+                    showReadinessInsights = false
+                    showProjectComparator = true
                 }
+            )
+        }
+
+        if (showProjectComparator && projects.size >= 2) {
+            ProjectComparatorDialog(
+                projects = projects,
+                qualityScoresMap = projectScoresMap,
+                securityScoresMap = projectSecurityScoresMap,
+                onDismiss = { showProjectComparator = false }
+            )
+        }
+
+        if (showAddCustomModelDialog) {
+            AddCustomGgufModelDialog(
+                onDismiss = { showAddCustomModelDialog = false },
+                onAddModel = onAddCustomModel
+            )
+        }
+
+        projectForMermaidDialog?.let { proj ->
+            val mermaidCode = remember(proj.id, proj.rawIdea, proj.currentPromptText) {
+                PromptEngineeringEngine.generateMermaidArchitectureAndErd(proj)
+            }
+            MermaidDiagramDialog(
+                project = proj,
+                mermaidCode = mermaidCode,
+                onCopy = { onCopyText("مخطط Mermaid (${proj.name})", mermaidCode, false) },
+                onExportMarkdown = { onExportMarkdown(proj, mermaidCode) },
+                onDismiss = { projectForMermaidDialog = null }
             )
         }
 

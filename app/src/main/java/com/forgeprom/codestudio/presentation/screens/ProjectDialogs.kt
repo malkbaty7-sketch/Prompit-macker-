@@ -5,6 +5,7 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.forgeprom.codestudio.core.security.VaultAndEnterpriseManager
 import com.forgeprom.codestudio.core.ui.LocalAdaptiveScreenSpec
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
 import com.forgeprom.codestudio.core.ux.LocalOfflineTtsReader
@@ -316,8 +318,24 @@ fun EditPromptDialog(
     var draftText by remember(project.id) {
         mutableStateOf(project.currentPromptText ?: project.rawIdea)
     }
+    val undoStack = remember(project.id) { mutableStateListOf<String>() }
+    val redoStack = remember(project.id) { mutableStateListOf<String>() }
+
+    fun applyDraftChange(newText: String) {
+        if (newText == draftText) return
+        undoStack.add(draftText)
+        if (undoStack.size > 30) {
+            undoStack.removeAt(0)
+        }
+        redoStack.clear()
+        draftText = newText
+    }
+
     val liveAudit = remember(draftText) {
         PromptEngineeringEngine.evaluatePromptQuality(draftText)
+    }
+    val liveSecrets = remember(draftText) {
+        VaultAndEnterpriseManager.detectAndRedactSecrets(draftText)
     }
     val liveTokens = remember(draftText) { estimatePromptTokens(draftText) }
     val wordCount = remember(draftText) {
@@ -371,6 +389,92 @@ fun EditPromptDialog(
                     trackColor = visual.recessedBg,
                     modifier = Modifier.fillMaxWidth().height(6.dp)
                 )
+
+                // شريط التراجع والإعادة (Undo / Redo Stack)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            if (undoStack.isNotEmpty()) {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                redoStack.add(draftText)
+                                draftText = undoStack.removeAt(undoStack.lastIndex)
+                            }
+                        },
+                        enabled = undoStack.isNotEmpty(),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 42.dp).testTag("editor_undo_button")
+                    ) {
+                        Icon(Icons.Default.Undo, contentDescription = "تراجع", modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("تراجع (${undoStack.size})", fontSize = 10.sp, maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            if (redoStack.isNotEmpty()) {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                undoStack.add(draftText)
+                                draftText = redoStack.removeAt(redoStack.lastIndex)
+                            }
+                        },
+                        enabled = redoStack.isNotEmpty(),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 42.dp).testTag("editor_redo_button")
+                    ) {
+                        Icon(Icons.Default.Redo, contentDescription = "إعادة", modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("إعادة (${redoStack.size})", fontSize = 10.sp, maxLines = 1)
+                    }
+                }
+
+                // تنبيه حي لتسرب المفاتيح والأسرار مع إخفاء فوري بلمسة واحدة
+                if (liveSecrets.foundCount > 0) {
+                    Surface(
+                        color = Color(0xFF991B1B).copy(alpha = 0.22f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.7f)),
+                        modifier = Modifier.fillMaxWidth().testTag("editor_secret_warning_banner")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.GppMaybe,
+                                    contentDescription = "تحذير تسرب أسرار",
+                                    tint = Color(0xFFF87171),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "رُصد ${liveSecrets.foundCount} أسرار مكشوفة (${liveSecrets.detectedTypes.joinToString("، ")})",
+                                    color = Color(0xFFFCA5A5),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    applyDraftChange(liveSecrets.redactedText)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp).testTag("editor_redact_secrets_button")
+                            ) {
+                                Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("إخفاء الأسرار فوراً (Secret Redactor)", fontSize = 10.sp, color = Color.White)
+                            }
+                        }
+                    }
+                }
+
                 Text(
                     text = "إدراج سريع لرفع الجودة:",
                     color = visual.secondaryText,
@@ -387,7 +491,7 @@ fun EditPromptDialog(
                         SuggestionChip(
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                draftText = draftText.trimEnd() + snippet
+                                applyDraftChange(draftText.trimEnd() + snippet)
                             },
                             label = { Text(label, fontSize = 10.sp, maxLines = 1) },
                             shape = RoundedCornerShape(8.dp),
@@ -397,7 +501,7 @@ fun EditPromptDialog(
                 }
                 OutlinedTextField(
                     value = draftText,
-                    onValueChange = { draftText = it },
+                    onValueChange = { applyDraftChange(it) },
                     label = { Text("نص البرومبت الهندسي والمواصفات") },
                     minLines = 7,
                     maxLines = 12,
@@ -439,6 +543,7 @@ fun ProjectDetailPanelContent(
     onOpenInStudio: (ProjectEntity) -> Unit,
     onEditPrompt: (ProjectEntity) -> Unit,
     onOpenVersionHistory: (ProjectEntity) -> Unit,
+    onSaveAsBlueprint: (ProjectEntity) -> Unit = {},
     onDuplicateProject: (ProjectEntity) -> Unit,
     onArchiveProject: (ProjectEntity) -> Unit,
     onShareProject: (ProjectEntity) -> Unit,
@@ -583,14 +688,27 @@ fun ProjectDetailPanelContent(
                         modifier = Modifier.size(15.dp)
                     )
                     Spacer(modifier = Modifier.width(5.dp))
+                    val chunkSuffix = if (isSpeakingThis && (ttsState?.totalChunks ?: 0) > 1) {
+                        " (${ttsState?.currentChunk}/${ttsState?.totalChunks})"
+                    } else ""
                     Text(
-                        text = if (isSpeakingThis) "إيقاف القراءة" else "استماع صوتي",
+                        text = if (isSpeakingThis) "إيقاف$chunkSuffix" else "استماع صوتي",
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
+        }
+
+        OutlinedButton(
+            onClick = { onSaveAsBlueprint(project) },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("save_as_custom_blueprint_button"),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+        ) {
+            Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(15.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("حفظ المشروع كقالب مخصّص قابل لإعادة الاستخدام", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
 
         Row(

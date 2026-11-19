@@ -2,6 +2,7 @@ package com.forgeprom.codestudio.domain.blueprint
 
 import android.content.Context
 import android.os.Environment
+import com.forgeprom.codestudio.core.export.NativeShareAndPdfHelper
 import com.forgeprom.codestudio.core.security.VaultAndEnterpriseManager
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
@@ -11,9 +12,8 @@ import java.util.zip.ZipOutputStream
 
 /**
  * مدير القوالب الهندسية الجاهزة ومُولّد هياكل المشاريع متعددة المنصات (BlueprintAndScaffoldManager)
- * 1. يوفّر 6 قوالب صناعية جاهزة.
- * 2. يولّد أرشيف كود مصدري حقيقي مطابق لمنصة المشروع المختارة:
- *    ANDROID_KOTLIN | FLUTTER | REACT_NATIVE | WEB | BACKEND
+ * 1. يوفّر 6 قوالب صناعية جاهزة ويدعم القوالب المخصصة المحفوظة من مشاريع المستخدم.
+ * 2. يولّد أرشيف كود مصدري مخصّص (packageName + وحدات اختيارية + حزمة تنفيذية تشمل PDF العربي).
  */
 object BlueprintAndScaffoldManager {
 
@@ -24,7 +24,17 @@ object BlueprintAndScaffoldManager {
         val targetPlatform: String,
         val description: String,
         val rawIdea: String,
-        val prebuiltPrompt: String
+        val prebuiltPrompt: String,
+        val isCustom: Boolean = false
+    )
+
+    data class ScaffoldExportConfig(
+        val packageName: String = "com.generated.app",
+        val includeAuthModule: Boolean = true,
+        val includeOfflineSyncQueue: Boolean = true,
+        val includeEncryptionVault: Boolean = true,
+        val includeUnitTests: Boolean = false,
+        val includeExecutiveBundlePdf: Boolean = false
     )
 
     fun getReadyBlueprints(): List<IndustryBlueprint> = listOf(
@@ -90,13 +100,29 @@ object BlueprintAndScaffoldManager {
         closeEntry()
     }
 
+    private fun ZipOutputStream.writeBytesEntry(path: String, bytes: ByteArray) {
+        putNextEntry(ZipEntry(path))
+        write(bytes)
+        closeEntry()
+    }
+
+    private fun sanitizePackageName(raw: String): String {
+        val cleaned = raw.trim().lowercase()
+            .replace(Regex("[^a-z0-9._]"), "")
+            .split(".")
+            .filter { it.isNotBlank() && it.first().isLetter() }
+            .joinToString(".")
+        return if (cleaned.contains(".")) cleaned else "com.generated.app"
+    }
+
     /**
-     * توليد حزمة كود مصدري متكامل مطابقة فعلياً لمنصة المشروع المختارة
+     * توليد حزمة كود مصدري متكامل مخصّصة مطابقة لمنصة المشروع المختارة مع خيار الحزمة التنفيذية (PDF + OpenAPI + OWASP + Code)
      */
     fun generateStarterBoilerplateZip(
         context: Context,
         project: ProjectEntity,
-        serverUrl: String = "https://api.forgeprom.local"
+        serverUrl: String = "https://api.forgeprom.local",
+        config: ScaffoldExportConfig = ScaffoldExportConfig()
     ): File {
         val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         val exportDir = File(baseDir, "ForgepromScaffolds")
@@ -109,12 +135,18 @@ object BlueprintAndScaffoldManager {
             .take(40)
             .ifBlank { "Forgeprom_Project" }
         val platformTag = project.targetPlatform.uppercase().replace(Regex("[^A-Z0-9_]"), "")
-        val zipFile = File(exportDir, "${safeName}_${platformTag}_Scaffold.zip")
+        val bundleSuffix = if (config.includeExecutiveBundlePdf) "_ExecutiveBundle" else "_Scaffold"
+        val zipFile = File(exportDir, "${safeName}_${platformTag}${bundleSuffix}.zip")
 
+        val sanitizedPkg = sanitizePackageName(config.packageName)
         val pipeline = PromptEngineeringEngine.generateChainedPipeline(project, serverUrl)
         val owaspItems = VaultAndEnterpriseManager.auditProjectSecurity(project)
         val safeTitle = escapeStringLiteral(project.name)
         val safeDesc = escapeStringLiteral(project.description)
+
+        val embeddedPdfFile = if (config.includeExecutiveBundlePdf) {
+            runCatching { NativeShareAndPdfHelper.generateNativeRtlPdf(context, project) }.getOrNull()
+        } else null
 
         ZipOutputStream(zipFile.outputStream()).use { zos ->
             // الوثائق الهندسية المشتركة لكل المنصات
@@ -124,7 +156,7 @@ object BlueprintAndScaffoldManager {
                 "docs/SECURITY_OWASP_AUDIT.md",
                 buildString {
                     appendLine("# تقرير التدقيق الأمني (OWASP Mobile & API Security Audit)")
-                    appendLine("المشروع: **${project.name}** | المنصة: **${project.targetPlatform}**\n")
+                    appendLine("المشروع: **${project.name}** | المنصة: **${project.targetPlatform}** | الحزمة: **$sanitizedPkg**\n")
                     owaspItems.forEach { item ->
                         val status = if (item.isPassed) "PASS" else "ACTION REQUIRED"
                         appendLine("## [$status | ${item.severity}] ${item.code} — ${item.title}")
@@ -133,22 +165,31 @@ object BlueprintAndScaffoldManager {
                 }
             )
 
-            // توليد الكود المصدري المطابق لمنصة المشروع
+            val extraDocs = StringBuilder()
+            if (embeddedPdfFile != null && embeddedPdfFile.exists()) {
+                zos.writeBytesEntry("docs/${safeName}_Executive_Spec.pdf", embeddedPdfFile.readBytes())
+                extraDocs.appendLine("- `docs/${safeName}_Executive_Spec.pdf`: الوثيقة التنفيذية المنسّقة بالعربية RTL (PDF)")
+            }
+
+            // توليد الكود المصدري المطابق لمنصة المشروع مع الوحدات المخصّصة
             val includedFilesSummary = when (project.targetPlatform.uppercase()) {
                 "FLUTTER" -> writeFlutterScaffold(zos, project, safeTitle, safeDesc)
                 "REACT_NATIVE" -> writeReactNativeScaffold(zos, project, safeTitle, safeDesc)
                 "WEB" -> writeWebScaffold(zos, project, safeTitle, safeDesc)
                 "BACKEND" -> writeBackendScaffold(zos, project, safeTitle, safeDesc, pipeline.databaseSchema)
-                else -> writeAndroidKotlinScaffold(zos, project, safeTitle, safeDesc)
+                else -> writeAndroidKotlinScaffold(zos, project, safeTitle, safeDesc, sanitizedPkg, config)
             }
+
+            val sharedModulesSummary = writeOptionalCrossPlatformModules(zos, project, sanitizedPkg, config)
 
             zos.writeTextEntry(
                 "README.md",
                 """
 # ${project.name} — Multi-Platform Engineering Scaffold
-تم توليد هذا الهيكل البرمجي المتكامل بواسطة **Forgeprom Code Studio v2.6**.
+تم توليد هذا الهيكل البرمجي المتكامل بواسطة **Forgeprom Code Studio v2.7**.
 - **المنصة المستهدفة:** ${project.targetPlatform}
 - **نوع المشروع:** ${project.type}
+- **معرّف الحزمة (Package / Namespace):** `$sanitizedPkg`
 
 ## الوصف الهندسي
 ${project.description}
@@ -157,7 +198,9 @@ ${project.description}
 - `docs/CHAINED_PRD_AND_SPECS.md`: وثيقة المتطلبات المتسلسلة (PRD + Database Schema + Prompts)
 - `docs/OPENAPI_3_1.yaml`: عقد الواجهات البرمجية القياسي (OpenAPI 3.1)
 - `docs/SECURITY_OWASP_AUDIT.md`: تقرير التدقيق الأمني OWASP
+${extraDocs.toString().trimEnd()}
 $includedFilesSummary
+$sharedModulesSummary
                 """.trimIndent()
             )
         }
@@ -165,12 +208,59 @@ $includedFilesSummary
         return zipFile
     }
 
+    private fun writeOptionalCrossPlatformModules(
+        zos: ZipOutputStream,
+        project: ProjectEntity,
+        sanitizedPkg: String,
+        config: ScaffoldExportConfig
+    ): String {
+        val isAndroid = project.targetPlatform.uppercase() == "ANDROID_KOTLIN" ||
+            project.targetPlatform.uppercase() !in listOf("FLUTTER", "REACT_NATIVE", "WEB", "BACKEND")
+        if (isAndroid) return ""
+
+        val summary = StringBuilder()
+        if (config.includeAuthModule) {
+            zos.writeTextEntry(
+                "modules/auth/AUTH_MODULE_CONTRACT.md",
+                "# Auth Module ($sanitizedPkg)\n- Bearer JWT + Refresh Token Rotation\n- Row-Level Owner Check (OWASP API1:2023)\n"
+            )
+            summary.appendLine("- `modules/auth/AUTH_MODULE_CONTRACT.md`: عقد وحدة المصادقة والصلاحيات")
+        }
+        if (config.includeOfflineSyncQueue) {
+            zos.writeTextEntry(
+                "modules/sync/OFFLINE_QUEUE_STRATEGY.md",
+                "# Offline Sync Queue ($sanitizedPkg)\n- Local-first outbox queue with exponential backoff & conflict resolution (updatedAt LWW).\n"
+            )
+            summary.appendLine("- `modules/sync/OFFLINE_QUEUE_STRATEGY.md`: استراتيجية طابور المزامنة دون إنترنت")
+        }
+        if (config.includeEncryptionVault) {
+            zos.writeTextEntry(
+                "modules/security/AES_VAULT_SPEC.md",
+                "# AES-256-GCM Local Vault\n- Hardware-backed key derivation + PBKDF2-HMAC-SHA256 portable backup.\n"
+            )
+            summary.appendLine("- `modules/security/AES_VAULT_SPEC.md`: مواصفات خزنة التشفير AES-256-GCM")
+        }
+        if (config.includeUnitTests) {
+            zos.writeTextEntry(
+                "tests/TEST_PLAN.md",
+                "# Automated Verification Plan\n- Unit tests for domain logic, security audit, offline persistence, and API contracts.\n"
+            )
+            summary.appendLine("- `tests/TEST_PLAN.md`: خطة وهياكل الاختبارات الآلية")
+        }
+        return summary.toString().trimEnd()
+    }
+
     private fun writeAndroidKotlinScaffold(
         zos: ZipOutputStream,
         project: ProjectEntity,
         safeTitle: String,
-        safeDesc: String
+        safeDesc: String,
+        packageName: String,
+        config: ScaffoldExportConfig
     ): String {
+        val pkgPath = packageName.replace('.', '/')
+        val summary = StringBuilder()
+
         zos.writeTextEntry(
             "app/build.gradle.kts",
             """
@@ -182,10 +272,10 @@ plugins {
 }
 
 android {
-    namespace = "com.generated.app"
+    namespace = "$packageName"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.generated.app"
+        applicationId = "$packageName"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -196,9 +286,9 @@ android {
             """.trimIndent()
         )
         zos.writeTextEntry(
-            "src/main/java/com/generated/app/domain/CoreModels.kt",
+            "src/main/java/$pkgPath/domain/CoreModels.kt",
             """
-package com.generated.app.domain
+package $packageName.domain
 
 data class CoreRecord(
     val id: String,
@@ -210,9 +300,9 @@ data class CoreRecord(
             """.trimIndent()
         )
         zos.writeTextEntry(
-            "src/main/java/com/generated/app/data/LocalDatabase.kt",
+            "src/main/java/$pkgPath/data/LocalDatabase.kt",
             """
-package com.generated.app.data
+package $packageName.data
 
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
@@ -240,9 +330,9 @@ interface CoreRecordDao {
             """.trimIndent()
         )
         zos.writeTextEntry(
-            "src/main/java/com/generated/app/presentation/MainViewModel.kt",
+            "src/main/java/$pkgPath/presentation/MainViewModel.kt",
             """
-package com.generated.app.presentation
+package $packageName.presentation
 
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -262,9 +352,9 @@ class MainViewModel : ViewModel() {
             """.trimIndent()
         )
         zos.writeTextEntry(
-            "src/main/java/com/generated/app/presentation/MainScreen.kt",
+            "src/main/java/$pkgPath/presentation/MainScreen.kt",
             """
-package com.generated.app.presentation
+package $packageName.presentation
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -284,13 +374,106 @@ fun GeneratedMainScreen(state: MainUiState = MainUiState()) {
 }
             """.trimIndent()
         )
-        return """
-- `app/build.gradle.kts`: إعدادات البناء والتبعيات (Kotlin + Compose + KSP)
-- `src/main/java/com/generated/app/domain/CoreModels.kt`: نماذج طبقة الـ Domain
-- `src/main/java/com/generated/app/data/LocalDatabase.kt`: Room Entity + DAO + Flow
-- `src/main/java/com/generated/app/presentation/MainViewModel.kt`: ViewModel + StateFlow
-- `src/main/java/com/generated/app/presentation/MainScreen.kt`: واجهة Jetpack Compose RTL
-        """.trimIndent()
+
+        summary.appendLine("- `app/build.gradle.kts`: إعدادات البناء والتبعيات (`$packageName`)")
+        summary.appendLine("- `src/main/java/$pkgPath/domain/CoreModels.kt`: نماذج طبقة الـ Domain")
+        summary.appendLine("- `src/main/java/$pkgPath/data/LocalDatabase.kt`: Room Entity + DAO + Flow")
+        summary.appendLine("- `src/main/java/$pkgPath/presentation/MainViewModel.kt`: ViewModel + StateFlow")
+        summary.appendLine("- `src/main/java/$pkgPath/presentation/MainScreen.kt`: واجهة Jetpack Compose RTL")
+
+        if (config.includeAuthModule) {
+            zos.writeTextEntry(
+                "src/main/java/$pkgPath/security/SessionAuthManager.kt",
+                """
+package $packageName.security
+
+data class AuthSession(val userId: String, val bearerToken: String, val expiresAtMs: Long)
+
+interface SessionAuthManager {
+    fun currentSession(): AuthSession?
+    fun isAuthenticated(): Boolean
+    fun clearSession()
+}
+                """.trimIndent()
+            )
+            summary.appendLine("- `src/main/java/$pkgPath/security/SessionAuthManager.kt`: وحدة إدارة المصادقة والجلسات")
+        }
+
+        if (config.includeOfflineSyncQueue) {
+            zos.writeTextEntry(
+                "src/main/java/$pkgPath/data/OfflineSyncQueue.kt",
+                """
+package $packageName.data
+
+enum class SyncOperation { CREATE, UPDATE, DELETE }
+
+data class PendingSyncTask(
+    val id: String,
+    val entityId: String,
+    val operation: SyncOperation,
+    val payloadJson: String,
+    val retryCount: Int = 0,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+                """.trimIndent()
+            )
+            summary.appendLine("- `src/main/java/$pkgPath/data/OfflineSyncQueue.kt`: طابور المزامنة المحلي عند انقطاع الشبكة")
+        }
+
+        if (config.includeEncryptionVault) {
+            zos.writeTextEntry(
+                "src/main/java/$pkgPath/security/LocalAesVault.kt",
+                """
+package $packageName.security
+
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+
+object LocalAesVault {
+    fun generateKey(alias: String): SecretKey {
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        val spec = KeyGenParameterSpec.Builder(
+            alias,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .build()
+        gen.init(spec)
+        return gen.generateKey()
+    }
+}
+                """.trimIndent()
+            )
+            summary.appendLine("- `src/main/java/$pkgPath/security/LocalAesVault.kt`: خزنة التشفير العتادي AES-256-GCM")
+        }
+
+        if (config.includeUnitTests) {
+            zos.writeTextEntry(
+                "src/test/java/$pkgPath/MainViewModelTest.kt",
+                """
+package $packageName
+
+import $packageName.presentation.MainViewModel
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class MainViewModelTest {
+    @Test
+    fun initialState_isOfflineReady() {
+        val vm = MainViewModel()
+        assertTrue(vm.uiState.value.isOfflineReady)
+    }
+}
+                """.trimIndent()
+            )
+            summary.appendLine("- `src/test/java/$pkgPath/MainViewModelTest.kt`: اختبار وحدة أساسي (JUnit)")
+        }
+
+        return summary.toString().trimEnd()
     }
 
     private fun writeFlutterScaffold(

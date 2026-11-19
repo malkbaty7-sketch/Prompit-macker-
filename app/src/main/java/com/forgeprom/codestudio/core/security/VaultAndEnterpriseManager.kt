@@ -173,6 +173,56 @@ object VaultAndEnterpriseManager {
         }
     }
 
+    data class SecretRedactionResult(
+        val foundCount: Int,
+        val redactedText: String,
+        val detectedTypes: List<String>
+    )
+
+    private val secretPatterns: List<Pair<String, Regex>> = listOf(
+        "OpenAI Key" to Regex("\\bsk-[a-zA-Z0-9_\\-]{16,}\\b"),
+        "Google API Key" to Regex("\\bAIza[0-9A-Za-z_\\-]{20,}\\b"),
+        "GitHub Token" to Regex("\\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\\b"),
+        "AWS Access Key" to Regex("\\bAKIA[0-9A-Z]{16}\\b"),
+        "JWT Token" to Regex("\\beyJ[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}\\b"),
+        "Bearer Token" to Regex("(?i)\\bBearer\\s+[A-Za-z0-9._\\-]{16,}"),
+        "Inline Secret/Password" to Regex("(?i)\\b(password|passwd|api[_-]?key|client[_-]?secret|access[_-]?token)\\s*[:=]\\s*['\"][^'\"\\n]{4,}['\"]")
+    )
+
+    /**
+     * كاشف ومنقّي الأسرار المكشوفة بلمسة واحدة (1-Tap Secret Redactor)
+     * يكتشف مفاتيح API ورموز JWT/Bearer/AWS/GitHub وكلمات المرور النصية ويستبدلها بـ BuildConfig.SECRET_KEY.
+     */
+    fun detectAndRedactSecrets(text: String): SecretRedactionResult {
+        if (text.isBlank()) return SecretRedactionResult(0, text, emptyList())
+        var working = text
+        var totalFound = 0
+        val foundTypes = mutableListOf<String>()
+
+        secretPatterns.forEach { (label, regex) ->
+            val matches = regex.findAll(working).toList()
+            if (matches.isNotEmpty()) {
+                totalFound += matches.size
+                foundTypes.add(label)
+                working = regex.replace(working) { match ->
+                    when (label) {
+                        "Bearer Token" -> "Bearer \${BuildConfig.SECRET_KEY}"
+                        "Inline Secret/Password" -> {
+                            val keyName = match.groupValues.getOrNull(1).orEmpty().ifBlank { "secret" }
+                            "$keyName = BuildConfig.SECRET_KEY"
+                        }
+                        else -> "BuildConfig.SECRET_KEY"
+                    }
+                }
+            }
+        }
+        return SecretRedactionResult(
+            foundCount = totalFound,
+            redactedText = working,
+            detectedTypes = foundTypes.distinct()
+        )
+    }
+
     fun encryptText(plainText: String): String = encryptSafely(plainText).getOrDefault(plainText)
     fun decryptText(encryptedJson: String): String = decryptSafely(encryptedJson).getOrDefault(encryptedJson)
 
@@ -184,7 +234,8 @@ object VaultAndEnterpriseManager {
         val lower = combined.lowercase()
 
         val hasCleartextRisk = lower.contains("http://") && !lower.contains("https://")
-        val hasSecretLeakRisk = Regex("(sk-[a-zA-Z0-9]{12,}|AIza[0-9A-Za-z\\-_]{20,}|password\\s*=\\s*['\"][^'\"]+['\"])").containsMatchIn(combined)
+        val secretScan = detectAndRedactSecrets(combined)
+        val hasSecretLeakRisk = secretScan.foundCount > 0
         val hasEncryptionSpec = lower.contains("aes") || lower.contains("keystore") || lower.contains("تشفير") || lower.contains("gcm")
         val hasAccessControlSpec = lower.contains("bola") || lower.contains("rls") || lower.contains("auth") || lower.contains("صلاحيات") || lower.contains("مالك") || lower.contains("oauth") || lower.contains("bearer")
         val hasRateLimitSpec = lower.contains("rate limit") || lower.contains("rate limiting") || lower.contains("سقف الطلبات") || lower.contains("throttle") || lower.contains("429")

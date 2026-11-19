@@ -26,36 +26,69 @@ data class PromptSnapshot(
 )
 
 /**
- * مخزن سجل الإصدارات المحلي لكل مشروع (يحتفظ بآخر 10 إصدارات مع التراجع الفوري بلمسة واحدة)
+ * محرك مقارنة الفروقات بين إصدارات البرومبت (Prompt Diff Engine)
+ */
+enum class DiffLineType { ADDED, REMOVED, UNCHANGED }
+
+data class PromptDiffLine(
+    val type: DiffLineType,
+    val text: String
+)
+
+data class PromptDiffReport(
+    val lines: List<PromptDiffLine>,
+    val addedCount: Int,
+    val removedCount: Int
+)
+
+object PromptDiffEngine {
+
+    /**
+     * يقارن الإصدار الأقدم (olderText) مع الإصدار الحالي (currentText) لإبراز الأسطر المضافة (+) والمحذوفة (-)
+     */
+    fun computeLineDiff(olderText: String, currentText: String): PromptDiffReport {
+        val oldLines = olderText.lines().map { it.trimEnd() }
+        val newLines = currentText.lines().map { it.trimEnd() }
+        val oldSet = oldLines.filter { it.isNotBlank() }.toSet()
+        val newSet = newLines.filter { it.isNotBlank() }.toSet()
+
+        val result = mutableListOf<PromptDiffLine>()
+        var added = 0
+        var removed = 0
+
+        // الأسطر الموجودة في القديم وحُذفت في الحالي
+        for (line in oldLines) {
+            if (line.isBlank()) continue
+            if (line !in newSet) {
+                result.add(PromptDiffLine(DiffLineType.REMOVED, line))
+                removed++
+            }
+        }
+
+        // الأسطر الحالية (تمييز المضاف منها مقابل المشترك)
+        for (line in newLines) {
+            if (line.isBlank()) continue
+            if (line !in oldSet) {
+                result.add(PromptDiffLine(DiffLineType.ADDED, line))
+                added++
+            } else {
+                result.add(PromptDiffLine(DiffLineType.UNCHANGED, line))
+            }
+        }
+
+        return PromptDiffReport(
+            lines = result,
+            addedCount = added,
+            removedCount = removed
+        )
+    }
+}
+
+/**
+ * مخزن سجل الإصدارات القديم (يُستخدم فقط لقراءة وترحيل أي لقطات سابقة إلى Room Database)
  */
 object PromptVersionHistoryStore {
     private const val PREFS_NAME = "forgeprom_prompt_history_v1"
-    private const val MAX_SNAPSHOTS_PER_PROJECT = 10
-
-    fun recordSnapshot(
-        context: Context,
-        projectId: String,
-        previousText: String?,
-        reason: String
-    ) {
-        val cleaned = previousText?.trim().orEmpty()
-        if (cleaned.isBlank()) return
-
-        val existing = getSnapshots(context, projectId)
-        if (existing.firstOrNull()?.promptText == cleaned) return
-
-        val score = PromptEngineeringEngine.evaluatePromptQuality(cleaned).totalScore
-        val newEntry = PromptSnapshot(
-            id = UUID.randomUUID().toString(),
-            projectId = projectId,
-            promptText = cleaned,
-            reason = reason,
-            qualityScore = score,
-            timestampMs = System.currentTimeMillis()
-        )
-        val merged = (listOf(newEntry) + existing).take(MAX_SNAPSHOTS_PER_PROJECT)
-        saveSnapshots(context, projectId, merged)
-    }
 
     fun getSnapshots(context: Context, projectId: String): List<PromptSnapshot> {
         val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -83,53 +116,41 @@ object PromptVersionHistoryStore {
         }
     }
 
-    fun getSnapshotCount(context: Context, projectId: String): Int = getSnapshots(context, projectId).size
-
     fun clearHistory(context: Context, projectId: String) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove("hist_$projectId")
             .apply()
     }
-
-    private fun saveSnapshots(context: Context, projectId: String, list: List<PromptSnapshot>) {
-        val arr = JSONArray()
-        list.forEach { snap ->
-            arr.put(
-                JSONObject().apply {
-                    put("id", snap.id)
-                    put("promptText", snap.promptText)
-                    put("reason", snap.reason)
-                    put("qualityScore", snap.qualityScore)
-                    put("timestampMs", snap.timestampMs)
-                }
-            )
-        }
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString("hist_$projectId", arr.toString())
-            .apply()
-    }
 }
 
 /**
- * حالة القارئ الصوتي المحلي (Offline Android TextToSpeech)
+ * حالة القارئ الصوتي المحلي المتطور (Chunked Offline Android TextToSpeech)
  */
 data class TtsPlaybackState(
     val isReady: Boolean = false,
     val isSpeaking: Boolean = false,
     val activeContentId: String? = null,
-    val speechRate: Float = 1.0f
-)
+    val speechRate: Float = 1.0f,
+    val currentChunk: Int = 0,
+    val totalChunks: Int = 0
+) {
+    val progressFraction: Float
+        get() = if (totalChunks > 0) (currentChunk.toFloat() / totalChunks.toFloat()).coerceIn(0f, 1f) else 0f
+}
 
 /**
- * محرك الاستماع الصوتي المحلي 100% دون إنترنت ودون أذونات باستخدام Android TextToSpeech
+ * محرك الاستماع الصوتي المحلي 100% دون إنترنت ودون أذونات (Chunked Utterance Queue)
+ * يقرأ الوثائق الهندسية الطويلة كاملة بلا اقتطاع عبر تقسيمها إلى فقرات ذكية متتالية مع تتبع حي للتقدم.
  */
 class OfflineTtsReader(context: Context) : TextToSpeech.OnInitListener {
 
     private var tts: TextToSpeech? = null
     private val _state = MutableStateFlow(TtsPlaybackState())
     val state: StateFlow<TtsPlaybackState> = _state.asStateFlow()
+
+    private var activeChunks: List<String> = emptyList()
+    private var activeRawContentId: String? = null
 
     init {
         try {
@@ -150,28 +171,86 @@ class OfflineTtsReader(context: Context) : TextToSpeech.OnInitListener {
             engine.setSpeechRate(_state.value.speechRate)
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    _state.value = _state.value.copy(isSpeaking = true, activeContentId = utteranceId)
+                    val (contentId, chunkIdx) = parseUtteranceId(utteranceId)
+                    if (contentId != null && contentId == activeRawContentId) {
+                        _state.value = _state.value.copy(
+                            isSpeaking = true,
+                            activeContentId = contentId,
+                            currentChunk = chunkIdx + 1,
+                            totalChunks = activeChunks.size
+                        )
+                    }
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    if (_state.value.activeContentId == utteranceId) {
-                        _state.value = _state.value.copy(isSpeaking = false, activeContentId = null)
+                    val (contentId, chunkIdx) = parseUtteranceId(utteranceId)
+                    if (contentId != null && contentId == activeRawContentId && chunkIdx >= activeChunks.lastIndex) {
+                        _state.value = _state.value.copy(
+                            isSpeaking = false,
+                            activeContentId = null,
+                            currentChunk = 0,
+                            totalChunks = 0
+                        )
                     }
                 }
 
                 @Deprecated("Deprecated in Android SDK")
                 override fun onError(utteranceId: String?) {
-                    _state.value = _state.value.copy(isSpeaking = false, activeContentId = null)
+                    _state.value = _state.value.copy(isSpeaking = false, activeContentId = null, currentChunk = 0, totalChunks = 0)
                 }
 
                 override fun onError(utteranceId: String?, errorCode: Int) {
-                    _state.value = _state.value.copy(isSpeaking = false, activeContentId = null)
+                    _state.value = _state.value.copy(isSpeaking = false, activeContentId = null, currentChunk = 0, totalChunks = 0)
                 }
             })
             _state.value = _state.value.copy(isReady = true)
         } else {
             _state.value = _state.value.copy(isReady = false)
         }
+    }
+
+    private fun parseUtteranceId(utteranceId: String?): Pair<String?, Int> {
+        if (utteranceId.isNullOrBlank()) return null to 0
+        val sep = utteranceId.lastIndexOf("::")
+        if (sep <= 0) return utteranceId to 0
+        val cid = utteranceId.substring(0, sep)
+        val idx = utteranceId.substring(sep + 2).toIntOrNull() ?: 0
+        return cid to idx
+    }
+
+    private fun splitIntoSpeechChunks(cleanText: String, maxChunkChars: Int = 850): List<String> {
+        val rawParagraphs = cleanText.split(Regex("(?<=[.!؟\\n])\\s+"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        val chunks = mutableListOf<String>()
+        val current = StringBuilder()
+
+        for (para in rawParagraphs) {
+            if (para.length > maxChunkChars) {
+                if (current.isNotEmpty()) {
+                    chunks.add(current.toString().trim())
+                    current.clear()
+                }
+                var cursor = 0
+                while (cursor < para.length) {
+                    val end = (cursor + maxChunkChars).coerceAtMost(para.length)
+                    chunks.add(para.substring(cursor, end).trim())
+                    cursor = end
+                }
+            } else if (current.length + para.length + 1 > maxChunkChars) {
+                chunks.add(current.toString().trim())
+                current.clear()
+                current.append(para)
+            } else {
+                if (current.isNotEmpty()) current.append(" ")
+                current.append(para)
+            }
+        }
+        if (current.isNotEmpty()) {
+            chunks.add(current.toString().trim())
+        }
+        return chunks.ifEmpty { listOf(cleanText.take(maxChunkChars)) }
     }
 
     fun toggleSpeak(contentId: String, rawText: String): Boolean {
@@ -186,23 +265,51 @@ class OfflineTtsReader(context: Context) : TextToSpeech.OnInitListener {
         val cleanText = sanitizeForSpeech(rawText)
         if (cleanText.isBlank()) return false
 
-        engine.setSpeechRate(current.speechRate)
-        // نحدّد سقفاً آمناً لطول المقطع لتجنب حدود TextToSpeech.getMaxSpeechInputLength()
-        val maxLen = TextToSpeech.getMaxSpeechInputLength().coerceAtMost(3600)
-        val clipped = cleanText.take(maxLen)
-        engine.speak(clipped, TextToSpeech.QUEUE_FLUSH, null, contentId)
-        _state.value = current.copy(isSpeaking = true, activeContentId = contentId)
+        val chunks = splitIntoSpeechChunks(cleanText)
+        activeChunks = chunks
+        activeRawContentId = contentId
+
+        enqueueFromChunk(engine, contentId, chunks, startIndex = 0, rate = current.speechRate)
         return true
     }
 
+    private fun enqueueFromChunk(
+        engine: TextToSpeech,
+        contentId: String,
+        chunks: List<String>,
+        startIndex: Int,
+        rate: Float
+    ) {
+        engine.setSpeechRate(rate)
+        val safeStart = startIndex.coerceIn(0, (chunks.size - 1).coerceAtLeast(0))
+        for (i in safeStart until chunks.size) {
+            val mode = if (i == safeStart) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            engine.speak(chunks[i], mode, null, "$contentId::$i")
+        }
+        _state.value = _state.value.copy(
+            isSpeaking = true,
+            activeContentId = contentId,
+            currentChunk = safeStart + 1,
+            totalChunks = chunks.size,
+            speechRate = rate
+        )
+    }
+
     fun cycleSpeechRate(): Float {
-        val nextRate = when (_state.value.speechRate) {
+        val current = _state.value
+        val nextRate = when (current.speechRate) {
             1.0f -> 1.25f
             1.25f -> 1.5f
             else -> 1.0f
         }
-        tts?.setSpeechRate(nextRate)
-        _state.value = _state.value.copy(speechRate = nextRate)
+        val engine = tts
+        if (engine != null && current.isSpeaking && activeRawContentId != null && activeChunks.isNotEmpty()) {
+            val resumeIdx = (current.currentChunk - 1).coerceAtLeast(0)
+            enqueueFromChunk(engine, activeRawContentId!!, activeChunks, resumeIdx, nextRate)
+        } else {
+            engine?.setSpeechRate(nextRate)
+            _state.value = current.copy(speechRate = nextRate)
+        }
         return nextRate
     }
 
@@ -211,12 +318,19 @@ class OfflineTtsReader(context: Context) : TextToSpeech.OnInitListener {
             tts?.stop()
         } catch (_: Exception) {
         }
-        _state.value = _state.value.copy(isSpeaking = false, activeContentId = null)
+        activeRawContentId = null
+        activeChunks = emptyList()
+        _state.value = _state.value.copy(
+            isSpeaking = false,
+            activeContentId = null,
+            currentChunk = 0,
+            totalChunks = 0
+        )
     }
 
     fun shutdown() {
+        stop()
         try {
-            tts?.stop()
             tts?.shutdown()
         } catch (_: Exception) {
         }
@@ -227,7 +341,7 @@ class OfflineTtsReader(context: Context) : TextToSpeech.OnInitListener {
         return raw
             .replace(Regex("[#*`>_|~\\[\\]]"), " ")
             .replace(Regex("-{2,}"), " ")
-            .replace(Regex("\\s+"), " ")
+            .replace(Regex("[ \\t]+"), " ")
             .trim()
     }
 }

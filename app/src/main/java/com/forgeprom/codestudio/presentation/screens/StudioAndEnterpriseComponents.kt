@@ -48,7 +48,9 @@ fun ChainedStudioWorkspace(
     onUpdateProjectPrompt: (ProjectEntity, String, String) -> Unit,
     onAnalyzeWireframeUri: (ProjectEntity, Uri) -> Unit,
     onCopyText: (String, String, Boolean) -> Unit,
-    onExportMarkdown: (ProjectEntity, String) -> Unit
+    onExportMarkdown: (ProjectEntity, String) -> Unit,
+    onExportArchitecturePng: (ProjectEntity) -> Unit = {},
+    onShowMermaidDiagram: (ProjectEntity) -> Unit = {}
 ) {
     val visual = LocalStudioVisualSettings.current
     val adaptive = LocalAdaptiveScreenSpec.current
@@ -474,7 +476,9 @@ fun ChainedStudioWorkspace(
                     item {
                         VisualArchitectureBlueprintCanvas(
                             projectName = activeProject.name,
-                            targetPlatform = activeProject.targetPlatform
+                            targetPlatform = activeProject.targetPlatform,
+                            onExportPng = { onExportArchitecturePng(activeProject) },
+                            onShowMermaid = { onShowMermaidDiagram(activeProject) }
                         )
                     }
                 }
@@ -496,7 +500,9 @@ fun ChainedStudioWorkspace(
             item {
                 VisualArchitectureBlueprintCanvas(
                     projectName = activeProject.name,
-                    targetPlatform = activeProject.targetPlatform
+                    targetPlatform = activeProject.targetPlatform,
+                    onExportPng = { onExportArchitecturePng(activeProject) },
+                    onShowMermaid = { onShowMermaidDiagram(activeProject) }
                 )
             }
             item { qualityCard() }
@@ -515,6 +521,8 @@ fun EnterpriseSuiteSection(
     exportCacheStats: NativeShareAndPdfHelper.ExportCacheStats = NativeShareAndPdfHelper.ExportCacheStats(0, 0L),
     onClearExportCache: () -> Unit = {},
     onAppendSecurityToProject: (ProjectEntity, String) -> Unit,
+    onRedactProjectSecrets: (ProjectEntity) -> Unit = {},
+    onOpenServiceDiagnostics: () -> Unit = {},
     onCopyText: (String, String, Boolean) -> Unit,
     onBackupAllProjects: () -> Unit,
     onRestoreBackupProjects: () -> Unit,
@@ -867,6 +875,18 @@ fun EnterpriseSuiteSection(
                             fontSize = 11.sp
                         )
                     }
+
+                    OutlinedButton(
+                        onClick = { onRedactProjectSecrets(activeProject) },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).testTag("redact_project_secrets_button")
+                    ) {
+                        Icon(Icons.Default.VisibilityOff, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "فحص وإخفاء الأسرار والمفاتيح المكشوفة (1-Tap Redactor)",
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             }
         }
@@ -957,10 +977,45 @@ fun EnterpriseSuiteSection(
 
                     if (vaultOutputText.isNotBlank()) {
                         IdeCodeTerminalViewer(
-                            title = "AES-256-GCM Payload (حافظة محمية)",
+                            title = "AES-256-GCM Payload (حافظة محمية — مسح تلقائي 45ث)",
                             codeText = vaultOutputText,
                             onCopy = { onCopyText("محتوى الخزنة المشفّر", vaultOutputText, true) }
                         )
+                    }
+                }
+            }
+
+            // بطاقة فحص صحة الخدمات والتشخيص الذاتي والإصلاح التلقائي (Service Diagnostics & Self-Heal)
+            Card(
+                colors = CardDefaults.cardColors(containerColor = visual.surfaceBg),
+                elevation = CardDefaults.cardElevation(defaultElevation = visual.cardElevation),
+                border = visual.cardBorder,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(visual.contentPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Default.MonitorHeart, contentDescription = null, tint = visual.accentSecondary, modifier = Modifier.size(18.dp))
+                        Text(
+                            text = "تشخيص صحة الخدمات والإصلاح الذاتي (Self-Heal)",
+                            fontWeight = FontWeight.Bold,
+                            color = visual.primaryText,
+                            fontSize = (13f + visual.fontDelta).sp
+                        )
+                    }
+                    Text(
+                        text = "فحص عملي حي لقاعدة Room v3، خزنة KeyStore AES-256، القارئ الصوتي TTS، الذاكرة، والكاش مع زر إصلاح ذاتي بلمسة واحدة.",
+                        color = visual.secondaryText,
+                        fontSize = 10.sp
+                    )
+                    Button(
+                        onClick = onOpenServiceDiagnostics,
+                        colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("open_service_diagnostics_button")
+                    ) {
+                        Icon(Icons.Default.HealthAndSafety, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("تشغيل الفحص الشامل للخدمات الآن", fontSize = 11.sp)
                     }
                 }
             }
@@ -974,13 +1029,13 @@ fun EnterpriseSuiteSection(
             ) {
                 Column(modifier = Modifier.padding(visual.contentPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "النسخ الاحتياطي المشفّر والمحمول (SAF + PBKDF2 + Smart Merge)",
+                        text = "النسخ الاحتياطي الشامل v4 (SAF + PBKDF2 + Smart Merge)",
                         fontWeight = FontWeight.Bold,
                         color = visual.primaryText,
                         fontSize = (13f + visual.fontDelta).sp
                     )
                     Text(
-                        text = "ادعم النسخ الداخلي أو تصدير/استيراد ملف خارجي بدون صلاحيات تخزين مع دمج ذكي يحمي تعديلاتك الأحدث.",
+                        text = "يحفظ ويستعيد المنظومة كاملة (المشاريع + سجل الإصدارات + القوالب المخصّصة) بتشفير AES-256 / PBKDF2 ودمج ذكي بدون صلاحيات تخزين.",
                         color = visual.secondaryText,
                         fontSize = 10.sp
                     )

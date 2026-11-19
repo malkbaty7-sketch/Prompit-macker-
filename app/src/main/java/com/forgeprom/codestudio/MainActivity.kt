@@ -39,6 +39,13 @@ class MainActivity : ComponentActivity() {
         extractShortcutAction(intent)?.let { pendingShortcutAction = it }
     }
 
+    override fun onStop() {
+        if (::offlineTtsReader.isInitialized) {
+            offlineTtsReader.stop()
+        }
+        super.onStop()
+    }
+
     override fun onDestroy() {
         if (::offlineTtsReader.isInitialized) {
             offlineTtsReader.shutdown()
@@ -94,7 +101,13 @@ class MainActivity : ComponentActivity() {
                 val researchCacheCount by viewModel.researchCacheCount.collectAsStateWithLifecycle()
                 val exportCacheStats by viewModel.exportCacheStats.collectAsStateWithLifecycle()
                 val busyStatusMessage by viewModel.busyStatusMessage.collectAsStateWithLifecycle()
-                val historyRefreshCounter by viewModel.historyRefreshCounter.collectAsStateWithLifecycle()
+                val promptVersionsMap by viewModel.promptVersionsMap.collectAsStateWithLifecycle()
+                val allBlueprints by viewModel.allBlueprints.collectAsStateWithLifecycle()
+                val projectScoresMap by viewModel.projectScoresMap.collectAsStateWithLifecycle()
+                val projectSecurityScoresMap by viewModel.projectSecurityScoresMap.collectAsStateWithLifecycle()
+                val diagnosticsReport by viewModel.diagnosticsReport.collectAsStateWithLifecycle()
+                val isRunningDiagnostics by viewModel.isRunningDiagnostics.collectAsStateWithLifecycle()
+                val models by viewModel.models.collectAsStateWithLifecycle()
                 val feedbackEvent by viewModel.feedbackEvent.collectAsStateWithLifecycle()
 
                 var pendingModelDownload by remember { mutableStateOf<ModelDownloadManager.GgufModelInfo?>(null) }
@@ -124,8 +137,8 @@ class MainActivity : ComponentActivity() {
                         serverStatus = serverStatus,
                         isCheckingServer = isCheckingServer,
                         currentServerUrl = currentServerUrl,
-                        models = viewModel.models,
-                        blueprints = viewModel.blueprints,
+                        models = models,
+                        blueprints = allBlueprints,
                         downloadStatusMap = downloadStatusMap,
                         downloadProgressMap = downloadProgressMap,
                         partialModelSizesMB = partialModelSizesMB,
@@ -138,8 +151,13 @@ class MainActivity : ComponentActivity() {
                         busyStatusMessage = busyStatusMessage,
                         shortcutAction = pendingShortcutAction,
                         onConsumeShortcutAction = { pendingShortcutAction = null },
-                        historyRefreshCounter = historyRefreshCounter,
-                        onGetProjectHistory = viewModel::getProjectHistory,
+                        promptVersionsMap = promptVersionsMap,
+                        projectScoresMap = projectScoresMap,
+                        projectSecurityScoresMap = projectSecurityScoresMap,
+                        diagnosticsReport = diagnosticsReport,
+                        isRunningDiagnostics = isRunningDiagnostics,
+                        onRunDiagnostics = viewModel::runServiceDiagnostics,
+                        onRunSelfHeal = viewModel::runSelfHeal,
                         onRestorePromptSnapshot = viewModel::restorePromptSnapshot,
                         onBatchPinProjects = viewModel::batchPinProjects,
                         onBatchArchiveProjects = viewModel::batchArchiveProjects,
@@ -206,6 +224,9 @@ class MainActivity : ComponentActivity() {
                         onClearResearchCache = viewModel::clearResearchCache,
                         onClearExportCache = viewModel::clearExportCache,
                         onUseBlueprint = viewModel::useBlueprint,
+                        onSaveAsBlueprint = viewModel::saveProjectAsCustomBlueprint,
+                        onDeleteCustomBlueprint = viewModel::deleteCustomBlueprint,
+                        onRedactProjectSecrets = viewModel::redactSecretsInProject,
                         onShareProject = { proj ->
                             if (!NativeShareAndPdfHelper.shareProjectPrompt(this@MainActivity, proj)) {
                                 viewModel.showFeedback("⚠️ لا يوجد تطبيق متاح للمشاركة على هذا الجهاز.")
@@ -217,7 +238,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onExportPdf = viewModel::exportPdf,
-                        onExportStarterZip = viewModel::exportStarterZip,
+                        onExportStarterZip = { proj, config -> viewModel.exportStarterZip(proj, config) },
                         onExportMarkdown = viewModel::exportMarkdown,
                         onUpdateProjectPrompt = viewModel::updateProjectPrompt,
                         onTogglePinProject = viewModel::togglePinProject,
@@ -230,7 +251,7 @@ class MainActivity : ComponentActivity() {
                         onCopyText = { label, text, isSensitive ->
                             NativeShareAndPdfHelper.copyToClipboard(this@MainActivity, label, text, isSensitive)
                             viewModel.showFeedback(
-                                if (isSensitive) "🔒 تم نسخ ($label) بحماية الحافظة الحساسة (مخفي في معاينة Android 13+)"
+                                if (isSensitive) "🔒 تم نسخ ($label) بحماية الحافظة الحساسة (مسح تلقائي بعد 45 ثانية)"
                                 else "✓ تم نسخ ($label) إلى الحافظة"
                             )
                         },
@@ -240,6 +261,13 @@ class MainActivity : ComponentActivity() {
                         onRestoreBackupFromUri = { uri, password, onPwdNeeded ->
                             viewModel.restoreBackupFromSafUri(uri, password, onPwdNeeded)
                         },
+                        onImportSpecFromUri = viewModel::importProjectSpecFromUri,
+                        onBatchBoostAllProjects = viewModel::batchBoostAllProjects,
+                        onExportArchitecturePng = viewModel::exportArchitecturePng,
+                        onVerifyModelIntegrity = viewModel::verifyModelIntegrity,
+                        onAddCustomModel = viewModel::addCustomGgufModel,
+                        onRemoveCustomModel = viewModel::removeCustomGgufModel,
+                        estimateModelFit = viewModel::estimateModelFit,
                         onNewProject = viewModel::createNewProject,
                         onSelectProject = { }
                     )

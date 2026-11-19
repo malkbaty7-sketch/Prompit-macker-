@@ -192,23 +192,222 @@ CREATE INDEX IF NOT EXISTS idx_records_listing ON core_records(is_pinned DESC, u
         }
     }
 
+    private data class DomainSchemaProfile(
+        val domainTitleAr: String,
+        val primaryTable: String,
+        val primaryEntity: String,
+        val secondaryTable: String,
+        val secondaryEntity: String,
+        val keyFields: List<String>
+    )
+
+    private fun inferDomainProfile(project: ProjectEntity): DomainSchemaProfile {
+        val text = "${project.name} ${project.description} ${project.rawIdea}".lowercase()
+        return when {
+            text.contains("pos") || text.contains("فواتير") || text.contains("مبيعات") || text.contains("محاسب") || text.contains("مخزون") ->
+                DomainSchemaProfile(
+                    domainTitleAr = "نقاط البيع والمحاسبة (POS & ERP)",
+                    primaryTable = "invoices",
+                    primaryEntity = "Invoice",
+                    secondaryTable = "invoice_items",
+                    secondaryEntity = "InvoiceItem",
+                    keyFields = listOf("invoice_number", "customer_name", "total_amount", "vat_qr_hash", "payment_status")
+                )
+            text.contains("عياد") || text.contains("مريض") || text.contains("طبي") || text.contains("clinic") || text.contains("emr") ->
+                DomainSchemaProfile(
+                    domainTitleAr = "الرعاية الصحية وإدارة العيادات (EMR)",
+                    primaryTable = "patients",
+                    primaryEntity = "Patient",
+                    secondaryTable = "medical_visits",
+                    secondaryEntity = "MedicalVisit",
+                    keyFields = listOf("full_name_enc", "national_id_hash", "diagnosis_notes_enc", "prescription_json", "visit_date")
+                )
+            text.contains("متجر") || text.contains("تسوق") || text.contains("منتج") || text.contains("سلة") || text.contains("ecommerce") ->
+                DomainSchemaProfile(
+                    domainTitleAr = "التجارة الإلكترونية والكتالوج (E-Commerce)",
+                    primaryTable = "products",
+                    primaryEntity = "Product",
+                    secondaryTable = "cart_orders",
+                    secondaryEntity = "CartOrder",
+                    keyFields = listOf("sku", "title", "price_cents", "stock_qty", "vendor_id")
+                )
+            text.contains("توصيل") || text.contains("مندوب") || text.contains("شحن") || text.contains("delivery") ->
+                DomainSchemaProfile(
+                    domainTitleAr = "اللوجستيات وتتبع الشحنات (Fleet & Delivery)",
+                    primaryTable = "shipments",
+                    primaryEntity = "Shipment",
+                    secondaryTable = "tracking_events",
+                    secondaryEntity = "TrackingEvent",
+                    keyFields = listOf("tracking_code", "driver_id", "gps_lat_lng", "proof_signature_hash", "delivery_status")
+                )
+            text.contains("تعليم") || text.contains("دور") || text.contains("طالب") || text.contains("edtech") || text.contains("أكاديمي") ->
+                DomainSchemaProfile(
+                    domainTitleAr = "التعليم الإلكتروني (EdTech)",
+                    primaryTable = "courses",
+                    primaryEntity = "Course",
+                    secondaryTable = "lesson_progress",
+                    secondaryEntity = "LessonProgress",
+                    keyFields = listOf("course_title", "instructor_id", "offline_bundle_uri", "quiz_score", "completion_pct")
+                )
+            text.contains("محفظ") || text.contains("مصروف") || text.contains("ميزاني") || text.contains("fintech") ->
+                DomainSchemaProfile(
+                    domainTitleAr = "التقنية المالية وإدارة المصروفات (FinTech)",
+                    primaryTable = "wallets",
+                    primaryEntity = "Wallet",
+                    secondaryTable = "ledger_transactions",
+                    secondaryEntity = "LedgerTransaction",
+                    keyFields = listOf("currency_code", "amount_minor", "category", "entry_type", "reconciled")
+                )
+            else ->
+                DomainSchemaProfile(
+                    domainTitleAr = "الكيانات التشغيلية الأساسية (Core Domain)",
+                    primaryTable = "core_records",
+                    primaryEntity = "CoreRecord",
+                    secondaryTable = "record_revisions",
+                    secondaryEntity = "RecordRevision",
+                    keyFields = listOf("title", "category", "payload_json", "sync_status", "is_pinned")
+                )
+        }
+    }
+
+    private fun buildDomainSpecificSchemaBlock(platform: String, domain: DomainSchemaProfile): String {
+        val colsSql = domain.keyFields.joinToString(",\n    ") { "$it TEXT NOT NULL" }
+        return when (platform.uppercase()) {
+            "FLUTTER" -> """
+```dart
+// Drift SQLite Domain Tables (${domain.domainTitleAr})
+class ${domain.primaryEntity}s extends Table {
+  TextColumn get id => text()();
+  ${domain.keyFields.joinToString("\n  ") { "TextColumn get ${it.replace("_", "")} => text()();" }}
+  IntColumn get updatedAt => integer()();
+  @override Set<Column> get primaryKey => {id};
+}
+
+class ${domain.secondaryEntity}s extends Table {
+  TextColumn get id => text()();
+  TextColumn get parentId => text().references(${domain.primaryEntity}s, #id, onDelete: KeyAction.cascade)();
+  TextColumn get payloadJson => text()();
+  IntColumn get createdAt => integer()();
+  @override Set<Column> get primaryKey => {id};
+}
+```
+            """.trimIndent()
+            "WEB" -> """
+```typescript
+// IndexedDB / Dexie.js Domain Schema (${domain.domainTitleAr})
+export interface ${domain.primaryEntity} {
+  id: string;
+  ${domain.keyFields.joinToString("\n  ") { "${it}: string;" }}
+  updatedAt: number;
+}
+export interface ${domain.secondaryEntity} {
+  id: string;
+  parentId: string; // FK -> ${domain.primaryTable}.id
+  payloadJson: string;
+  createdAt: number;
+}
+// db.version(1).stores({ ${domain.primaryTable}: 'id, updatedAt', ${domain.secondaryTable}: 'id, parentId, createdAt' });
+```
+            """.trimIndent()
+            "BACKEND" -> """
+```sql
+-- PostgreSQL Domain Schema (${domain.domainTitleAr})
+CREATE TABLE IF NOT EXISTS ${domain.primaryTable} (
+    id UUID PRIMARY KEY,
+    owner_uid TEXT NOT NULL,
+    $colsSql,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS ${domain.secondaryTable} (
+    id UUID PRIMARY KEY,
+    parent_id UUID NOT NULL REFERENCES ${domain.primaryTable}(id) ON DELETE CASCADE,
+    payload_json JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_${domain.primaryTable}_owner_time ON ${domain.primaryTable}(owner_uid, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_${domain.secondaryTable}_parent ON ${domain.secondaryTable}(parent_id, created_at DESC);
+```
+            """.trimIndent()
+            else -> """
+```sql
+-- Room / SQLite Domain Schema (${domain.domainTitleAr})
+CREATE TABLE IF NOT EXISTS ${domain.primaryTable} (
+    id TEXT PRIMARY KEY NOT NULL,
+    $colsSql,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ${domain.secondaryTable} (
+    id TEXT PRIMARY KEY NOT NULL,
+    parent_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(parent_id) REFERENCES ${domain.primaryTable}(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_${domain.primaryTable}_listing ON ${domain.primaryTable}(is_pinned DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_${domain.secondaryTable}_parent ON ${domain.secondaryTable}(parent_id, created_at DESC);
+```
+            """.trimIndent()
+        }
+    }
+
     /**
-     * توليد السلسلة الهندسية الكاملة من 4 مراحل مترابطة ومتخصصة لمنصة المشروع
+     * مولّد مخططات Mermaid.js (المعمارية + علاقات قاعدة البيانات ERD) جاهز للنسخ إلى GitHub / Notion
+     */
+    fun generateMermaidArchitectureAndErd(project: ProjectEntity): String {
+        val domain = inferDomainProfile(project)
+        val safeTitle = project.name.replace("\"", "'")
+        return """
+```mermaid
+flowchart TD
+    UI["Presentation Layer (${project.targetPlatform})<br/>$safeTitle"] --> VM["ViewModel / StateFlow"]
+    VM --> DOM["Domain Pipeline & Quality Linter"]
+    DOM --> REPO["Offline-First Repository"]
+    REPO --> DB[("Local DB: ${domain.primaryTable} & ${domain.secondaryTable}")]
+    REPO --> VAULT["AES-256-GCM Security Vault"]
+    REPO -.-> SYNC["Hybrid HTTPS API (Circuit Breaker)"]
+```
+
+```mermaid
+erDiagram
+    ${domain.primaryEntity.uppercase()} ||--o{ ${domain.secondaryEntity.uppercase()} : "contains (CASCADE)"
+    ${domain.primaryEntity.uppercase()} {
+        string id PK
+        ${domain.keyFields.joinToString("\n        ") { "string $it" }}
+        long updated_at
+    }
+    ${domain.secondaryEntity.uppercase()} {
+        string id PK
+        string parent_id FK
+        string payload_json
+        long created_at
+    }
+```
+        """.trimIndent()
+    }
+
+    /**
+     * توليد السلسلة الهندسية الكاملة من 4 مراحل مترابطة ومتخصصة لمنصة ومجال المشروع
      */
     fun generateChainedPipeline(project: ProjectEntity, serverUrl: String): ChainedPipelineResult {
         val idea = project.rawIdea.ifBlank { project.description }
         val stack = resolvePlatformStack(project.targetPlatform, project.name)
+        val domain = inferDomainProfile(project)
+        val dynamicSchemaBlock = buildDomainSpecificSchemaBlock(project.targetPlatform, domain)
 
         val prdSpec = """
 # المرحلة 1: وثيقة متطلبات المنتج (PRD) — ${project.name}
 - **المنصة المستهدفة:** ${project.targetPlatform} (${stack.displayTitle})
+- **المجال المستنتج:** ${domain.domainTitleAr}
 - **المعمارية المعتمدة:** ${stack.architecturePattern}
 - **نوع المشروع:** ${project.type}
 - **الرؤية والهدف:** $idea
 
 ## قصص المستخدمين الأساسية (User Stories)
 1. كمستخدم رئيسي، أحتاج إلى واجهة سريعة تدعم اللغة العربية (RTL) والوضع الداكن عبر ${stack.uiFramework}.
-2. كمستخدم ميداني، أحتاج إلى استمرار عمل كافة الوظائف الحرجة عبر ${stack.storageEngine} دون فقدان بيانات عند انقطاع الإنترنت (Offline-First).
+2. كمستخدم ميداني، أحتاج إلى إدارة سجلات (${domain.primaryEntity} و ${domain.secondaryEntity}) عبر ${stack.storageEngine} دون فقدان بيانات عند انقطاع الإنترنت.
 3. كمدير نظام، أحتاج إلى حماية البيانات الحساسة عبر ${stack.securityTooling} وتصدير التقارير بصيغ قياسية.
 
 ## معايير القبول (Acceptance Criteria)
@@ -218,10 +417,12 @@ CREATE INDEX IF NOT EXISTS idx_records_listing ON core_records(is_pinned DESC, u
         """.trimIndent()
 
         val databaseSchema = """
-# المرحلة 2: مخطط قاعدة البيانات والعلاقات (Database Schema & ER)
+# المرحلة 2: مخطط قاعدة البيانات والعلاقات (Domain-Aware ER Schema)
+- **المجال:** ${domain.domainTitleAr}
 - **محرك التخزين المعتمد:** ${stack.storageEngine}
+- **العلاقة الأساسية:** `${domain.primaryTable} (1) ──< (N) ${domain.secondaryTable}` (ON DELETE CASCADE)
 
-${stack.schemaBlock}
+$dynamicSchemaBlock
         """.trimIndent()
 
         val apiContracts = VaultAndEnterpriseManager.generateOpenApiSpec(project, serverUrl)

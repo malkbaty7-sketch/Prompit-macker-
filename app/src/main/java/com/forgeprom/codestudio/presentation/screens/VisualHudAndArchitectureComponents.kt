@@ -446,7 +446,9 @@ fun ProjectQualityRing(score: Int, modifier: Modifier = Modifier) {
 @Composable
 fun VisualArchitectureBlueprintCanvas(
     projectName: String,
-    targetPlatform: String
+    targetPlatform: String,
+    onExportPng: (() -> Unit)? = null,
+    onShowMermaid: (() -> Unit)? = null
 ) {
     val visual = LocalStudioVisualSettings.current
     var selectedLayerIndex by remember { mutableIntStateOf(0) }
@@ -592,6 +594,36 @@ fun VisualArchitectureBlueprintCanvas(
                         color = visual.secondaryText,
                         fontSize = (10f + visual.fontDelta).sp
                     )
+                }
+            }
+
+            if (onExportPng != null || onShowMermaid != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (onExportPng != null) {
+                        OutlinedButton(
+                            onClick = onExportPng,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("export_architecture_png_button")
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تصدير PNG", fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+                    if (onShowMermaid != null) {
+                        OutlinedButton(
+                            onClick = onShowMermaid,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("show_mermaid_diagram_button")
+                        ) {
+                            Icon(Icons.Default.Schema, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("مخطط Mermaid", fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
                 }
             }
         }

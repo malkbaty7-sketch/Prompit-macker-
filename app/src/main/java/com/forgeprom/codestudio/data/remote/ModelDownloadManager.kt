@@ -10,20 +10,23 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.UUID
 
 /**
- * مدير تنزيل النماذج المحلية المكمّمة (GGUF Q4_K_M) من خوادم HuggingFace
+ * مدير تنزيل النماذج المحلية المكمّمة (GGUF Q4_K_M) من خوادم HuggingFace أو الروابط المخصّصة
  * المزايا المطورة:
  * - التنزيل الذري عبر ملف مرحلي (.part) لا يُعتمد كنموذج نهائي إلا بعد نجاح فحص الترويسة وبصمة SHA-256.
  * - حساب سرعة التنزيل اللحظية (MB/s) والوقت المتبقي المتوقع (ETA).
- * - تتبّع حجم الجزء المحمّل مسبقاً لعرض حالة الاستكمال (Resume Ready).
- * - فحص الـ RAM المسبق وفحص المساحة التخزينية المتاحة قبل التنزيل.
+ * - تقدير الأداء الفعلي على الجهاز (tokens/sec + هامش RAM المتبقي) وفحص سلامة الملف المثبّت لاحقاً.
+ * - دعم إضافة وإدارة روابط نماذج GGUF مخصّصة (HTTPS Only).
  */
 class ModelDownloadManager(
     private val context: Context,
@@ -39,7 +42,22 @@ class ModelDownloadManager(
         val requiredRamMB: Long,
         val downloadUrl: String,
         val expectedSha256: String,
-        val arabicSupportLevel: String
+        val arabicSupportLevel: String,
+        val isCustom: Boolean = false
+    )
+
+    data class ModelRuntimeFit(
+        val estimatedTokensPerSec: Double,
+        val headroomRamMB: Long,
+        val fitLabel: String,
+        val isOptimal: Boolean
+    )
+
+    data class ModelIntegrityResult(
+        val isValid: Boolean,
+        val sha256Short: String,
+        val actualSizeMB: Long,
+        val message: String
     )
 
     sealed class DownloadProgress {
@@ -91,6 +109,145 @@ class ModelDownloadManager(
             arabicSupportLevel = "دقة هندسية فائقة بالعربية (للهواتف 6GB - 8GB RAM)"
         )
     )
+
+    fun getAllModels(): List<GgufModelInfo> = getCustomModels() + getRecommendedModels()
+
+    fun getCustomModels(): List<GgufModelInfo> {
+        val raw = context.getSharedPreferences(PREFS_MODELS, Context.MODE_PRIVATE)
+            .getString(KEY_CUSTOM_MODELS, null) ?: return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(
+                        GgufModelInfo(
+                            id = obj.optString("id"),
+                            name = obj.optString("name"),
+                            parameters = obj.optString("parameters", "Custom"),
+                            quantization = obj.optString("quantization", "Q4_K_M"),
+                            fileSizeMB = obj.optLong("fileSizeMB", 900L).coerceAtLeast(64L),
+                            requiredRamMB = obj.optLong("requiredRamMB", 1125L).coerceAtLeast(128L),
+                            downloadUrl = obj.optString("downloadUrl"),
+                            expectedSha256 = obj.optString("expectedSha256", ""),
+                            arabicSupportLevel = "نموذج GGUF مخصّص مضاف بواسطة المستخدم",
+                            isCustom = true
+                        )
+                    )
+                }
+            }.filter { it.id.isNotBlank() && it.downloadUrl.startsWith("https://") }
+        }.getOrDefault(emptyList())
+    }
+
+    fun addCustomModel(
+        name: String,
+        downloadUrl: String,
+        fileSizeMB: Long,
+        parameters: String = "Custom"
+    ): Result<GgufModelInfo> {
+        val cleanName = name.trim()
+        val cleanUrl = downloadUrl.trim()
+        if (cleanName.isBlank()) return Result.failure(IllegalArgumentException("يرجى إدخال اسم النموذج."))
+        if (!cleanUrl.startsWith("https://", ignoreCase = true) || !cleanUrl.lowercase().contains(".gguf")) {
+            return Result.failure(IllegalArgumentException("يجب أن يبدأ الرابط بـ https:// ويشير إلى ملف .gguf صالح."))
+        }
+        val safeSize = fileSizeMB.coerceIn(64L, 12_000L)
+        val model = GgufModelInfo(
+            id = "custom-gguf-${UUID.randomUUID().toString().take(8)}",
+            name = cleanName,
+            parameters = parameters.trim().ifBlank { "Custom" },
+            quantization = "Q4_K_M",
+            fileSizeMB = safeSize,
+            requiredRamMB = (safeSize * 1.25).toLong(),
+            downloadUrl = cleanUrl,
+            expectedSha256 = "",
+            arabicSupportLevel = "نموذج GGUF مخصّص مضاف بواسطة المستخدم",
+            isCustom = true
+        )
+        val updated = listOf(model) + getCustomModels()
+        persistCustomModels(updated)
+        return Result.success(model)
+    }
+
+    fun removeCustomModel(modelId: String) {
+        val current = getCustomModels()
+        current.find { it.id == modelId }?.let { deleteDownloadedModel(it) }
+        persistCustomModels(current.filterNot { it.id == modelId })
+    }
+
+    private fun persistCustomModels(list: List<GgufModelInfo>) {
+        val arr = JSONArray()
+        list.forEach { m ->
+            arr.put(
+                JSONObject().apply {
+                    put("id", m.id)
+                    put("name", m.name)
+                    put("parameters", m.parameters)
+                    put("quantization", m.quantization)
+                    put("fileSizeMB", m.fileSizeMB)
+                    put("requiredRamMB", m.requiredRamMB)
+                    put("downloadUrl", m.downloadUrl)
+                    put("expectedSha256", m.expectedSha256)
+                }
+            )
+        }
+        context.getSharedPreferences(PREFS_MODELS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_CUSTOM_MODELS, arr.toString())
+            .apply()
+    }
+
+    /**
+     * تقدير الأداء الفعلي (tokens/sec) وهامش الذاكرة المتبقي لكل نموذج حسب عتاد الهاتف الحالي
+     */
+    fun estimateRuntimeFit(
+        model: GgufModelInfo,
+        hw: HardwareProfiler.DeviceHardwareReport
+    ): ModelRuntimeFit {
+        val headroom = hw.availableRamMB - model.requiredRamMB
+        val is64Bit = hw.primaryAbi.contains("64")
+        val abiFactor = if (is64Bit) 1.0 else 0.55
+        val threadFactor = (hw.recommendedThreads.coerceIn(2, 8) / 4.0)
+        val sizeBillions = (model.fileSizeMB / 650.0).coerceAtLeast(0.5)
+        val estimatedTps = ((16.5 * abiFactor * threadFactor) / sizeBillions).coerceIn(1.5, 42.0)
+        val roundedTps = Math.round(estimatedTps * 10.0) / 10.0
+
+        val (label, optimal) = when {
+            headroom >= 900L && is64Bit -> "أداء ممتاز (~$roundedTps tok/s • هامش +${headroom} MB)" to true
+            headroom >= 0L -> "متوافق (~$roundedTps tok/s • هامش +${headroom} MB)" to false
+            else -> "ذاكرة غير كافية (نقص ${-headroom} MB لتجنب OOM)" to false
+        }
+        return ModelRuntimeFit(
+            estimatedTokensPerSec = roundedTps,
+            headroomRamMB = headroom,
+            fitLabel = label,
+            isOptimal = optimal
+        )
+    }
+
+    /**
+     * فحص سلامة أي نموذج GGUF مثبّت مسبقاً (ترويسة GGUF + حساب بصمة SHA-256 الفعلية)
+     */
+    fun verifyInstalledModelIntegrity(model: GgufModelInfo): ModelIntegrityResult {
+        val file = getModelFile(model)
+        if (!file.exists()) {
+            return ModelIntegrityResult(false, "", 0L, "ملف النموذج غير موجود على الجهاز.")
+        }
+        val sizeMB = (file.length() / (1024L * 1024L)).coerceAtLeast(1L)
+        if (!hasValidGgufHeader(file)) {
+            return ModelIntegrityResult(false, "", sizeMB, "تحذير: ترويسة ملف GGUF تالفة — يُنصح بحذف الملف وإعادة تنزيله.")
+        }
+        val sha = ChecksumValidator.calculateSha256(file)
+        if (model.expectedSha256.isNotBlank() && !sha.equals(model.expectedSha256.trim(), ignoreCase = true)) {
+            return ModelIntegrityResult(false, sha.take(12), sizeMB, "تحذير: البصمة SHA-256 لا تطابق المرجع المتوقع!")
+        }
+        return ModelIntegrityResult(
+            isValid = true,
+            sha256Short = sha.take(12),
+            actualSizeMB = sizeMB,
+            message = "✓ الملف سليم 100% (ترويسة GGUF صالحة • الحجم $sizeMB MB • SHA:${sha.take(12)})"
+        )
+    }
 
     fun isModelCompatibleWithDevice(model: GgufModelInfo): Boolean {
         return hardwareProfiler.getAvailableRamMB() >= model.requiredRamMB
@@ -327,6 +484,9 @@ class ModelDownloadManager(
     }.flowOn(Dispatchers.IO)
 
     companion object {
+        private const val PREFS_MODELS = "forgeprom_custom_models_v1"
+        private const val KEY_CUSTOM_MODELS = "custom_gguf_models_json"
+
         fun formatSpeedAndEta(speedMBps: Double, etaSeconds: Long): String {
             val speedText = if (speedMBps >= 0.05) {
                 String.format(Locale.US, "%.1f MB/s", speedMBps)

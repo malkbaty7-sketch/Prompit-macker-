@@ -6,6 +6,7 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -15,14 +16,19 @@ import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.PersistableBundle
+import android.provider.OpenableColumns
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import androidx.core.content.FileProvider
 import com.forgeprom.codestudio.core.security.ChecksumValidator
 import com.forgeprom.codestudio.core.security.VaultAndEnterpriseManager
+import com.forgeprom.codestudio.data.local.model.CustomBlueprintEntity
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
+import com.forgeprom.codestudio.data.local.model.PromptVersionEntity
 import com.forgeprom.codestudio.domain.pipeline.PromptEngineeringEngine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -61,9 +67,18 @@ object NativeShareAndPdfHelper {
 
     data class BackupRestoreResult(
         val projects: List<ProjectEntity>,
+        val promptVersions: List<PromptVersionEntity> = emptyList(),
+        val customBlueprints: List<CustomBlueprintEntity> = emptyList(),
         val wasEncrypted: Boolean,
         val requiresPassword: Boolean = false,
         val integrityVerified: Boolean,
+        val errorMessage: String? = null
+    )
+
+    data class SpecImportResult(
+        val project: ProjectEntity?,
+        val redactedSecretsCount: Int = 0,
+        val sourceFileName: String = "",
         val errorMessage: String? = null
     )
 
@@ -122,8 +137,13 @@ object NativeShareAndPdfHelper {
         return cleaned.ifBlank { "Forgeprom_Project" }
     }
 
+    private const val SENSITIVE_CLIPBOARD_TTL_MS = 45_000L
+    private val clipboardHandler = Handler(Looper.getMainLooper())
+    private var pendingClearClipboardTask: Runnable? = null
+
     fun copyToClipboard(context: Context, label: String, text: String, isSensitive: Boolean = false) {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val appContext = context.applicationContext
+        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newPlainText(label, text)
         if (isSensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             clip.description.extras = PersistableBundle().apply {
@@ -131,6 +151,34 @@ object NativeShareAndPdfHelper {
             }
         }
         clipboard.setPrimaryClip(clip)
+
+        pendingClearClipboardTask?.let { clipboardHandler.removeCallbacks(it) }
+        pendingClearClipboardTask = null
+
+        if (isSensitive) {
+            val clearTask = Runnable {
+                try {
+                    val currentText = clipboard.primaryClip
+                        ?.takeIf { it.itemCount > 0 }
+                        ?.getItemAt(0)
+                        ?.coerceToText(appContext)
+                        ?.toString()
+                    if (currentText == text) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            clipboard.clearPrimaryClip()
+                        } else {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
+                        }
+                    }
+                } catch (_: Exception) {
+                    // تجاهل أي استثناء عند تنظيف الحافظة في الخلفية
+                } finally {
+                    pendingClearClipboardTask = null
+                }
+            }
+            pendingClearClipboardTask = clearTask
+            clipboardHandler.postDelayed(clearTask, SENSITIVE_CLIPBOARD_TTL_MS)
+        }
     }
 
     fun shareExportedFile(context: Context, file: File, mimeType: String): Boolean {
@@ -381,13 +429,217 @@ object NativeShareAndPdfHelper {
 
     private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
+    /**
+     * تصدير المخطط المعماري البصري للمشروع كصورة PNG عالية الدقة (1200x720) جاهزة للعروض والوثائق
+     */
+    fun exportArchitectureDiagramPng(context: Context, project: ProjectEntity): File {
+        val width = 1200
+        val height = 720
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(11, 20, 30) }
+        val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(16, 36, 52) }
+        val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(16, 185, 129) }
+        val cardBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(51, 65, 85)
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f
+        }
+        val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(56, 189, 248)
+            strokeWidth = 5f
+        }
+        val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 34f
+            isFakeBoldText = true
+        }
+        val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(148, 163, 184)
+            textSize = 20f
+        }
+        val boxTitlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 24f
+            isFakeBoldText = true
+        }
+        val boxSubPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(203, 213, 225)
+            textSize = 18f
+        }
+        val badgePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(52, 211, 153)
+            textSize = 20f
+            isFakeBoldText = true
+        }
+
+        val qualityScore = PromptEngineeringEngine.evaluatePromptQuality(
+            project.currentPromptText ?: project.rawIdea
+        ).totalScore
+        val securityScore = VaultAndEnterpriseManager.calculateSecurityScore(
+            VaultAndEnterpriseManager.auditProjectSecurity(project)
+        )
+
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+        canvas.drawRect(0f, 0f, width.toFloat(), 124f, headerPaint)
+        canvas.drawRect(0f, 124f, width.toFloat(), 130f, accentPaint)
+
+        canvas.drawText("Forgeprom Visual Architecture Blueprint", 48f, 54f, titlePaint)
+        canvas.drawText(
+            "${project.name.take(48)}  •  Platform: ${project.targetPlatform}  •  Quality: $qualityScore%  •  OWASP: $securityScore%",
+            48f,
+            96f,
+            subPaint
+        )
+
+        val layers = listOf(
+            Triple("1. Presentation & Adaptive UI", "Material 3 RTL • Adaptive Layout • StateFlow", Color.rgb(15, 118, 110)),
+            Triple("2. Domain & AI Pipeline", "Chained 4-Stage PRD • Quality Linter • Diff Engine", Color.rgb(37, 99, 235)),
+            Triple("3. Data, Room & AES-256 Vault", "Offline-First SQLite • KeyStore GCM • Hybrid Sync", Color.rgb(109, 40, 217))
+        )
+
+        val boxWidth = 330f
+        val boxHeight = 320f
+        val topY = 190f
+        val xs = listOf(48f, 435f, 822f)
+
+        // أسهم الربط بين الطبقات
+        canvas.drawLine(xs[0] + boxWidth, topY + boxHeight / 2f, xs[1], topY + boxHeight / 2f, arrowPaint)
+        canvas.drawLine(xs[1] + boxWidth, topY + boxHeight / 2f, xs[2], topY + boxHeight / 2f, arrowPaint)
+
+        layers.forEachIndexed { idx, (lTitle, lSub, colorInt) ->
+            val rect = RectF(xs[idx], topY, xs[idx] + boxWidth, topY + boxHeight)
+            val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(21, 34, 48) }
+            val topBarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = colorInt }
+            canvas.drawRoundRect(rect, 20f, 20f, fillPaint)
+            canvas.drawRoundRect(RectF(xs[idx], topY, xs[idx] + boxWidth, topY + 18f), 20f, 20f, topBarPaint)
+            canvas.drawRoundRect(rect, 20f, 20f, cardBorderPaint)
+
+            val titleLayout = StaticLayout.Builder
+                .obtain(lTitle, 0, lTitle.length, boxTitlePaint, (boxWidth - 36).toInt())
+                .build()
+            canvas.save()
+            canvas.translate(xs[idx] + 18f, topY + 42f)
+            titleLayout.draw(canvas)
+            canvas.restore()
+
+            val subLayout = StaticLayout.Builder
+                .obtain(lSub, 0, lSub.length, boxSubPaint, (boxWidth - 36).toInt())
+                .setLineSpacing(6f, 1.15f)
+                .build()
+            canvas.save()
+            canvas.translate(xs[idx] + 18f, topY + 132f)
+            subLayout.draw(canvas)
+            canvas.restore()
+
+            canvas.drawText("Layer 0${idx + 1} ✓ Active", xs[idx] + 18f, topY + boxHeight - 28f, badgePaint)
+        }
+
+        val footerCard = RectF(48f, 558f, width - 48f, 672f)
+        val footerFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(17, 29, 42) }
+        canvas.drawRoundRect(footerCard, 16f, 16f, footerFill)
+        canvas.drawRoundRect(footerCard, 16f, 16f, cardBorderPaint)
+        canvas.drawText("Offline-First Clean Architecture • Exported by Forgeprom Code Studio", 72f, 608f, boxSubPaint)
+        val dateStamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
+        canvas.drawText("Timestamp: $dateStamp  |  Zero-Trust AES-256-GCM Ready", 72f, 646f, subPaint)
+
+        val exportDir = getExportDirectory(context)
+        val safeName = sanitizeFileName(project.name)
+        val pngFile = File(exportDir, "${safeName}_Architecture_Blueprint.png")
+        FileOutputStream(pngFile).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+        bitmap.recycle()
+        return pngFile
+    }
+
+    /**
+     * استيراد ذكي لمواصفات مشروع من ملف خارجي (.md / .txt / .yaml) عبر SAF بدون صلاحيات تخزين
+     */
+    fun importProjectSpecFromUri(context: Context, uri: Uri): SpecImportResult {
+        return try {
+            val fileName = resolveDisplayName(context, uri) ?: "Imported_Spec.md"
+            val rawText = context.contentResolver.openInputStream(uri)
+                ?.bufferedReader(Charsets.UTF_8)
+                ?.use { it.readText() }
+                ?.trim()
+                .orEmpty()
+            if (rawText.isBlank()) {
+                return SpecImportResult(null, errorMessage = "الملف المختار فارغ ولا يحتوي على نص مواصفات.")
+            }
+
+            // فحص وإخفاء أي أسرار مكشوفة تلقائياً لحظة الاستيراد
+            val redaction = VaultAndEnterpriseManager.detectAndRedactSecrets(rawText)
+            val safeText = redaction.redactedText
+
+            val firstHeading = safeText.lines()
+                .firstOrNull { it.trim().startsWith("#") }
+                ?.replace(Regex("^#+\\s*"), "")
+                ?.trim()
+            val cleanedFileName = fileName
+                .substringBeforeLast(".")
+                .replace('_', ' ')
+                .replace('-', ' ')
+                .trim()
+            val projectTitle = (firstHeading?.takeIf { it.isNotBlank() } ?: cleanedFileName)
+                .ifBlank { "مشروع مستورد" }
+                .take(60)
+
+            val lower = safeText.lowercase()
+            val detectedPlatform = when {
+                lower.contains("flutter") || lower.contains("dart") || lower.contains("riverpod") -> "FLUTTER"
+                lower.contains("react native") || lower.contains("expo") -> "REACT_NATIVE"
+                lower.contains("next.js") || lower.contains("tailwind") || lower.contains("pwa") || lower.contains("html") -> "WEB"
+                lower.contains("openapi:") || lower.contains("postgresql") || lower.contains("dockerfile") || lower.contains("microservice") -> "BACKEND"
+                else -> "ANDROID_KOTLIN"
+            }
+
+            val firstParagraph = safeText.lines()
+                .map { it.trim() }
+                .firstOrNull { it.isNotBlank() && !it.startsWith("#") && !it.startsWith("```") }
+                ?.take(160)
+                ?: projectTitle
+
+            val now = System.currentTimeMillis()
+            val project = ProjectEntity(
+                id = UUID.randomUUID().toString(),
+                name = projectTitle,
+                description = firstParagraph,
+                type = "IMPORTED_SPEC",
+                targetPlatform = detectedPlatform,
+                rawIdea = firstParagraph,
+                currentPromptText = safeText,
+                createdAt = now,
+                updatedAt = now
+            )
+            SpecImportResult(
+                project = project,
+                redactedSecretsCount = redaction.foundCount,
+                sourceFileName = fileName
+            )
+        } catch (_: Exception) {
+            SpecImportResult(null, errorMessage = "تعذر قراءة الملف المختار — تأكد أنه ملف نصي (.md أو .txt أو .yaml).")
+        }
+    }
+
+    private fun resolveDisplayName(context: Context, uri: Uri): String? {
+        return runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()
+    }
+
     private fun buildBackupEnvelopeJson(
         projects: List<ProjectEntity>,
+        promptVersions: List<PromptVersionEntity> = emptyList(),
+        customBlueprints: List<CustomBlueprintEntity> = emptyList(),
         portablePassword: String? = null
     ): Triple<String, Boolean, Pair<Boolean, String>> {
         val innerPayload = JSONObject().apply {
             put("app", "Forgeprom Code Studio")
-            put("version", "2.6.0")
+            put("version", "2.8.0")
             put("exportedAt", System.currentTimeMillis())
             val arr = JSONArray()
             for (p in projects) {
@@ -408,6 +660,38 @@ object NativeShareAndPdfHelper {
                 )
             }
             put("projects", arr)
+
+            val versionsArr = JSONArray()
+            for (v in promptVersions) {
+                versionsArr.put(
+                    JSONObject().apply {
+                        put("id", v.id)
+                        put("projectId", v.projectId)
+                        put("promptText", v.promptText)
+                        put("reason", v.reason)
+                        put("qualityScore", v.qualityScore)
+                        put("timestampMs", v.timestampMs)
+                    }
+                )
+            }
+            put("promptVersions", versionsArr)
+
+            val bpArr = JSONArray()
+            for (bp in customBlueprints) {
+                bpArr.put(
+                    JSONObject().apply {
+                        put("id", bp.id)
+                        put("title", bp.title)
+                        put("category", bp.category)
+                        put("targetPlatform", bp.targetPlatform)
+                        put("description", bp.description)
+                        put("rawIdea", bp.rawIdea)
+                        put("prebuiltPrompt", bp.prebuiltPrompt)
+                        put("createdAt", bp.createdAt)
+                    }
+                )
+            }
+            put("customBlueprints", bpArr)
         }.toString()
 
         val payloadHash = ChecksumValidator.calculateSha256(innerPayload)
@@ -439,17 +723,24 @@ object NativeShareAndPdfHelper {
     }
 
     /**
-     * حفظ نسخة احتياطية مشفرة محلياً داخل التطبيق
+     * حفظ نسخة احتياطية مشفرة شاملة محلياً داخل التطبيق (المشاريع + سجل الإصدارات + القوالب المخصّصة)
      */
     fun exportAllProjectsBackupJson(
         context: Context,
         projects: List<ProjectEntity>,
-        portablePassword: String? = null
+        portablePassword: String? = null,
+        promptVersions: List<PromptVersionEntity> = emptyList(),
+        customBlueprints: List<CustomBlueprintEntity> = emptyList()
     ): BackupSaveResult {
         val backupDir = File(context.filesDir, "backups")
         if (!backupDir.exists()) backupDir.mkdirs()
 
-        val (jsonText, isEncrypted, meta) = buildBackupEnvelopeJson(projects, portablePassword)
+        val (jsonText, isEncrypted, meta) = buildBackupEnvelopeJson(
+            projects = projects,
+            promptVersions = promptVersions,
+            customBlueprints = customBlueprints,
+            portablePassword = portablePassword
+        )
         val backupFile = File(backupDir, "forgeprom_projects_backup.json")
         backupFile.writeText(jsonText, Charsets.UTF_8)
         return BackupSaveResult(
@@ -461,15 +752,22 @@ object NativeShareAndPdfHelper {
     }
 
     /**
-     * تصدير النسخة الاحتياطية المشفرة إلى أي مجلد يختاره المستخدم عبر منتقي الملفات الرسمي SAF (دون صلاحيات تخزين)
+     * تصدير النسخة الاحتياطية المشفرة الشاملة إلى أي مجلد يختاره المستخدم عبر SAF (دون صلاحيات تخزين)
      */
     fun exportBackupToUri(
         context: Context,
         uri: Uri,
         projects: List<ProjectEntity>,
-        portablePassword: String? = null
+        portablePassword: String? = null,
+        promptVersions: List<PromptVersionEntity> = emptyList(),
+        customBlueprints: List<CustomBlueprintEntity> = emptyList()
     ): BackupSaveResult {
-        val (jsonText, isEncrypted, meta) = buildBackupEnvelopeJson(projects, portablePassword)
+        val (jsonText, isEncrypted, meta) = buildBackupEnvelopeJson(
+            projects = projects,
+            promptVersions = promptVersions,
+            customBlueprints = customBlueprints,
+            portablePassword = portablePassword
+        )
         context.contentResolver.openOutputStream(uri)?.use { out ->
             out.write(jsonText.toByteArray(Charsets.UTF_8))
             out.flush()
@@ -569,8 +867,53 @@ object NativeShareAndPdfHelper {
                     )
                 )
             }
+            val restoredVersions = mutableListOf<PromptVersionEntity>()
+            val versionsArr = root.optJSONArray("promptVersions")
+            if (versionsArr != null) {
+                for (i in 0 until versionsArr.length()) {
+                    val obj = versionsArr.getJSONObject(i)
+                    val pid = obj.optString("projectId").trim()
+                    val text = obj.optString("promptText").trim()
+                    if (pid.isBlank() || text.isBlank()) continue
+                    restoredVersions.add(
+                        PromptVersionEntity(
+                            id = obj.optString("id").ifBlank { UUID.randomUUID().toString() },
+                            projectId = pid,
+                            promptText = text,
+                            reason = obj.optString("reason", "نسخة مستعادة"),
+                            qualityScore = obj.optInt("qualityScore", 80),
+                            timestampMs = obj.optLong("timestampMs", System.currentTimeMillis())
+                        )
+                    )
+                }
+            }
+
+            val restoredBlueprints = mutableListOf<CustomBlueprintEntity>()
+            val bpArr = root.optJSONArray("customBlueprints")
+            if (bpArr != null) {
+                for (i in 0 until bpArr.length()) {
+                    val obj = bpArr.getJSONObject(i)
+                    val title = obj.optString("title").trim()
+                    if (title.isBlank()) continue
+                    restoredBlueprints.add(
+                        CustomBlueprintEntity(
+                            id = obj.optString("id").ifBlank { "custom-${UUID.randomUUID()}" },
+                            title = title,
+                            category = obj.optString("category", "قوالبي المخصصة"),
+                            targetPlatform = obj.optString("targetPlatform", "ANDROID_KOTLIN"),
+                            description = obj.optString("description", title),
+                            rawIdea = obj.optString("rawIdea", title),
+                            prebuiltPrompt = obj.optString("prebuiltPrompt", title),
+                            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                        )
+                    )
+                }
+            }
+
             BackupRestoreResult(
                 projects = result,
+                promptVersions = restoredVersions,
+                customBlueprints = restoredBlueprints,
                 wasEncrypted = isEncryptedV2 || isPortableV3,
                 integrityVerified = true
             )

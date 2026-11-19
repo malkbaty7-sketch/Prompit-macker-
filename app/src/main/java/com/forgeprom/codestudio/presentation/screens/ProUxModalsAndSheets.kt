@@ -33,7 +33,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.forgeprom.codestudio.core.security.VaultAndEnterpriseManager
 import com.forgeprom.codestudio.core.ui.LocalStudioVisualSettings
+import com.forgeprom.codestudio.core.ux.DiffLineType
 import com.forgeprom.codestudio.core.ux.LocalOfflineTtsReader
+import com.forgeprom.codestudio.core.ux.PromptDiffEngine
 import com.forgeprom.codestudio.core.ux.PromptSnapshot
 import com.forgeprom.codestudio.data.local.model.ProjectEntity
 import com.forgeprom.codestudio.domain.blueprint.BlueprintAndScaffoldManager
@@ -84,6 +86,8 @@ fun PromptVersionHistoryDialog(
     val visual = LocalStudioVisualSettings.current
     val haptic = LocalHapticFeedback.current
     var expandedId by remember { mutableStateOf<String?>(snapshots.firstOrNull()?.id) }
+    var showDiffMode by remember { mutableStateOf(false) }
+    val currentProjectPrompt = project.currentPromptText ?: project.rawIdea
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -110,90 +114,170 @@ fun PromptVersionHistoryDialog(
                 ) {
                     Icon(Icons.Default.HistoryToggleOff, contentDescription = null, tint = visual.secondaryText, modifier = Modifier.size(34.dp))
                     Text(
-                        text = "لا توجد إصدارات سابقة محفوظة لهذا المشروع بعد.\nسيحفظ التطبيق لقطة تلقائياً قبل أي تعديل أو تحسين تلقائي.",
+                        text = "لا توجد إصدارات سابقة محفوظة لهذا المشروع بعد.\nسيحفظ التطبيق لقطة تلقائياً في Room قبل أي تعديل أو تحسين تلقائي.",
                         color = visual.secondaryText,
                         fontSize = (12f + visual.fontDelta).sp
                     )
                 }
             } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.heightIn(max = 380.dp).testTag("version_history_list")
-                ) {
-                    items(snapshots, key = { it.id }) { snap ->
-                        val isExpanded = expandedId == snap.id
-                        Surface(
-                            color = visual.recessedBg,
-                            shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isExpanded) visual.accentPrimary.copy(alpha = 0.6f) else Color.Transparent
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { expandedId = if (isExpanded) null else snap.id }
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = !showDiffMode,
+                            onClick = { showDiffMode = false },
+                            label = { Text("نص الإصدار", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1f).testTag("history_mode_raw_chip")
+                        )
+                        FilterChip(
+                            selected = showDiffMode,
+                            onClick = { showDiffMode = true },
+                            label = { Text("مقارنة الفروقات (+/-)", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1.2f).testTag("history_mode_diff_chip")
+                        )
+                    }
+
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.heightIn(max = 360.dp).testTag("version_history_list")
+                    ) {
+                        items(snapshots, key = { it.id }) { snap ->
+                            val isExpanded = expandedId == snap.id
+                            val diffReport = remember(snap.id, currentProjectPrompt, showDiffMode, isExpanded) {
+                                if (showDiffMode && isExpanded) {
+                                    PromptDiffEngine.computeLineDiff(snap.promptText, currentProjectPrompt)
+                                } else null
+                            }
+                            Surface(
+                                color = visual.recessedBg,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isExpanded) visual.accentPrimary.copy(alpha = 0.6f) else Color.Transparent
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { expandedId = if (isExpanded) null else snap.id }
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = snap.reason,
+                                                color = visual.primaryText,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = (12f + visual.fontDelta).sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${formatRelativeTimeAr(snap.timestampMs)} • ~${estimatePromptTokens(snap.promptText)} توكن",
+                                                color = visual.secondaryText,
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                        Surface(
+                                            color = if (snap.qualityScore >= 85) Color(0xFF065F46) else visual.accentPrimary.copy(alpha = 0.25f),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text(
+                                                text = "${snap.qualityScore}%",
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                            )
+                                        }
+                                    }
+
+                                    if (showDiffMode && isExpanded && diffReport != null) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Surface(color = Color(0xFF065F46).copy(alpha = 0.3f), shape = RoundedCornerShape(6.dp)) {
+                                                Text(
+                                                    text = "+${diffReport.addedCount} مضاف حالياً",
+                                                    color = Color(0xFF34D399),
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            Surface(color = Color(0xFF991B1B).copy(alpha = 0.3f), shape = RoundedCornerShape(6.dp)) {
+                                                Text(
+                                                    text = "-${diffReport.removedCount} في هذا الإصدار",
+                                                    color = Color(0xFFF87171),
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        val changedLines = diffReport.lines.filter { it.type != DiffLineType.UNCHANGED }.take(14)
+                                        if (changedLines.isEmpty()) {
+                                            Text(
+                                                text = "✓ هذا الإصدار مطابق للنص الحالي.",
+                                                color = Color(0xFF10B981),
+                                                fontSize = 10.sp
+                                            )
+                                        } else {
+                                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                changedLines.forEach { dLine ->
+                                                    val prefix = if (dLine.type == DiffLineType.ADDED) "+ " else "- "
+                                                    val bg = if (dLine.type == DiffLineType.ADDED) {
+                                                        Color(0xFF065F46).copy(alpha = 0.22f)
+                                                    } else {
+                                                        Color(0xFF991B1B).copy(alpha = 0.22f)
+                                                    }
+                                                    val fg = if (dLine.type == DiffLineType.ADDED) Color(0xFF34D399) else Color(0xFFFCA5A5)
+                                                    Text(
+                                                        text = prefix + dLine.text,
+                                                        color = fg,
+                                                        fontSize = 10.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .background(bg, RoundedCornerShape(4.dp))
+                                                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
                                         Text(
-                                            text = snap.reason,
-                                            color = visual.primaryText,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = (12f + visual.fontDelta).sp,
-                                            maxLines = 1,
+                                            text = snap.promptText,
+                                            color = visual.secondaryText,
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = if (isExpanded) 10 else 2,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        Text(
-                                            text = "${formatRelativeTimeAr(snap.timestampMs)} • ~${estimatePromptTokens(snap.promptText)} توكن",
-                                            color = visual.secondaryText,
-                                            fontSize = 10.sp
-                                        )
                                     }
-                                    Surface(
-                                        color = if (snap.qualityScore >= 85) Color(0xFF065F46) else visual.accentPrimary.copy(alpha = 0.25f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(
-                                            text = "${snap.qualityScore}%",
-                                            color = Color.White,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                        )
-                                    }
-                                }
 
-                                Text(
-                                    text = snap.promptText,
-                                    color = visual.secondaryText,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    maxLines = if (isExpanded) 10 else 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-
-                                if (isExpanded) {
-                                    Button(
-                                        onClick = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            onRestoreSnapshot(snap)
-                                            onDismiss()
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
-                                        modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp).testTag("restore_snapshot_${snap.id}")
-                                    ) {
-                                        Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("استعادة هذا الإصدار الآن", fontSize = 11.sp)
+                                    if (isExpanded) {
+                                        Button(
+                                            onClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                onRestoreSnapshot(snap)
+                                                onDismiss()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                                            modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp).testTag("restore_snapshot_${snap.id}")
+                                        ) {
+                                            Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("استعادة هذا الإصدار الآن", fontSize = 11.sp)
+                                        }
                                     }
                                 }
                             }
@@ -303,7 +387,10 @@ fun FullScreenCodeReaderDialog(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (isSpeakingThis) "إيقاف" else "استماع", fontSize = 10.sp)
+                                val chunkBadge = if (isSpeakingThis && (ttsState?.totalChunks ?: 0) > 1) {
+                                    " (${ttsState?.currentChunk}/${ttsState?.totalChunks})"
+                                } else ""
+                                Text(if (isSpeakingThis) "إيقاف$chunkBadge" else "استماع", fontSize = 10.sp)
                             }
                             Surface(
                                 color = Color(0xFF1E2D3D),
@@ -546,7 +633,9 @@ fun ProjectReadinessInsightsDialog(
     projects: List<ProjectEntity>,
     onDismiss: () -> Unit,
     onAutoRefineProject: (ProjectEntity) -> Unit,
-    onOpenInStudio: (ProjectEntity) -> Unit
+    onOpenInStudio: (ProjectEntity) -> Unit,
+    onBatchBoostAll: () -> Unit = {},
+    onOpenComparator: () -> Unit = {}
 ) {
     val visual = LocalStudioVisualSettings.current
     val haptic = LocalHapticFeedback.current
@@ -675,6 +764,45 @@ fun ProjectReadinessInsightsDialog(
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp
                 )
+
+                if (projectsNeedingBoost.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onBatchBoostAll()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = visual.accentPrimary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("batch_boost_all_projects_button")
+                    ) {
+                        Icon(Icons.Default.RocketLaunch, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "تحسين وتحصين جميع المشاريع الناقصة (${projectsNeedingBoost.size}) دفعة واحدة",
+                            fontSize = 11.sp,
+                            maxLines = 2
+                        )
+                    }
+                }
+
+                if (projects.size >= 2) {
+                    OutlinedButton(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onOpenComparator()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("open_project_comparator_button")
+                    ) {
+                        Icon(Icons.Default.CompareArrows, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("مقارنة مشروعين جنباً إلى جنب (Comparator)", fontSize = 11.sp)
+                    }
+                }
 
                 projectsNeedingBoost.forEach { (proj, quality, security) ->
                     Surface(
